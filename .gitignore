@@ -1,0 +1,17 @@
+# 暫存檔
+_*.py
+_*.csv
+_*.txt
+法說會查詢.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Claude
+.claude/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
