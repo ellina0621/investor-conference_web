@@ -5,6 +5,7 @@
 import json
 import glob
 import os
+import re
 import threading
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -21,6 +22,49 @@ OUT_HTML  = os.path.join(BASE, 'index.html')
 LARGE_CAP_THRESHOLD = 10_000_000_000  # 100億元
 
 START_YEAR, END_YEAR = 2021, 2026
+
+
+# ---------- 擇要訊息期別解析 ----------
+
+_Q_MAP = {'一': 'Q1', '二': 'Q2', '三': 'Q3', '四': 'Q4'}
+
+def extract_period_mention(text):
+    """從擇要訊息中抽出財報期別，例如 '2024年第一季' → '2024 Q1'"""
+    if pd.isna(text) or not str(text).strip():
+        return None
+    t = str(text).strip()
+
+    # 西元年 + 第X季: "2024年第一季"
+    m = re.search(r'(20\d{2})年第([一二三四])季', t)
+    if m:
+        return f'{m.group(1)} {_Q_MAP[m.group(2)]}'
+
+    # 民國年 + 第X季: "114年第四季"
+    m = re.search(r'(1[01]\d)年第([一二三四])季', t)
+    if m:
+        return f'{int(m.group(1))+1911} {_Q_MAP[m.group(2)]}'
+
+    # 西元年 + Q數字: "2026Q1" "2025q4"
+    m = re.search(r'(20\d{2})[Qq]([1-4])', t)
+    if m:
+        return f'{m.group(1)} Q{m.group(2)}'
+
+    # 民國年 + Q數字: "114Q4"
+    m = re.search(r'(1[01]\d)[Qq]([1-4])', t)
+    if m:
+        return f'{int(m.group(1))+1911} Q{m.group(2)}'
+
+    # 西元年 + 全年/年度: "2024年度" "2024全年"
+    m = re.search(r'(20\d{2})年?(?:度|全年|年報)', t)
+    if m:
+        return f'{m.group(1)} 年報'
+
+    # 無年份，只有第X季
+    m = re.search(r'第([一二三四])季', t)
+    if m:
+        return _Q_MAP[m.group(1)]
+
+    return None
 
 
 # ---------- 輔助函數 ----------
@@ -44,16 +88,26 @@ def build_trading_arr(start_year, end_year):
     return pd.DatetimeIndex([s.tz_localize(None) for s in sessions])
 
 
+# 大型股年報實際截止日（依年份，key=申報年，即財報年度+1）
+_LC_ANNUAL = {2023: (3, 16), 2024: (3, 15), 2025: (3, 17), 2026: (3, 16)}
+
+
 def get_report_anchors(start_year, end_year):
     monthly = [(m, 10) for m in range(1, 13)]
-    special = [(3, 15), (3, 31), (4, 1), (5, 15), (8, 14), (11, 14)]
+    # 移除固定3/15與4/1；大型股年報改為逐年實際日期；年報其餘併入Q4 3/31
+    special_fixed = [(3, 31), (5, 15), (8, 14), (11, 14)]
     anchors = []
     for year in range(start_year, end_year + 1):
-        for m, d in monthly + special:
+        for m, d in monthly + special_fixed:
             try:
                 anchors.append(pd.Timestamp(f'{year}-{m:02d}-{d:02d}'))
             except Exception:
                 pass
+        lc_m, lc_d = _LC_ANNUAL.get(year, (3, 15))
+        try:
+            anchors.append(pd.Timestamp(f'{year}-{lc_m:02d}-{lc_d:02d}'))
+        except Exception:
+            pass
     return sorted(set(anchors))
 
 
@@ -86,9 +140,7 @@ def filter_closest_to_anchors(df, anchors, trading_arr, window=20):
 
 
 _ANCHOR_LABEL = {
-    (3, 15): '年報(大型股/金融)',
     (3, 31): 'Q4財報',
-    (4,  1): '年報(其餘)',
     (5, 15): 'Q1財報',
     (8, 14): 'Q2財報',
     (11,14): 'Q3財報',
@@ -97,6 +149,9 @@ _ANCHOR_LABEL = {
 def get_anchor_label(anchor):
     if anchor.day == 10:
         return '月營收'
+    # 大型股年報：3月中旬（15/16/17日皆可能）
+    if anchor.month == 3 and anchor.day in (15, 16, 17):
+        return '年報(大型股/金融)'
     return _ANCHOR_LABEL.get((anchor.month, anchor.day), '其他')
 
 
@@ -176,6 +231,13 @@ def main():
     otc  = attach_anchor_info(otc,  anchors, trading_arr)
     all_stat = pd.concat([twse, otc], ignore_index=True)
 
+    # 從擇要訊息抽出說明期別
+    memo_col = '法人說明會擇要訊息'
+    if memo_col in all_stat.columns:
+        all_stat['說明財報期'] = all_stat[memo_col].apply(extract_period_mention)
+    else:
+        all_stat['說明財報期'] = None
+
     # 讀取實收資本額（判斷大型股 ≥ 100億）
     print('讀取實收資本額.csv…')
     with open(CAP_CSV, 'rb') as f:
@@ -215,7 +277,8 @@ def main():
 
     print('產生 HTML…')
     _export_cols = ['公司代號', '日期', '召開法人說明會時間',
-                    '財報期別', '財報年度', '財報錨點', '前後', '距截止日交易日', '市場']
+                    '財報期別', '財報年度', '財報錨點', '前後', '距截止日交易日', '市場',
+                    '說明財報期', '法人說明會擇要訊息']
     if '公司名稱' in all_stat.columns:
         _export_cols.insert(1, '公司名稱')
     _export_cols = [c for c in _export_cols if c in all_stat.columns]
@@ -317,7 +380,7 @@ body:not(.sb-off) #sb-toggle{left:246px;}
 .ind-header.open{color:#93c5fd;}
 .ind-arrow{font-size:10px;transition:.2s;display:inline-block;}
 .ind-header.open .ind-arrow{transform:rotate(90deg);}
-.ind-cnt{background:#1e3a5f;color:#60a5fa;border-radius:8px;padding:1px 7px;font-size:11px;font-weight:800;}
+.ind-cnt{background:#2A5470;color:#fff;border-radius:8px;padding:1px 7px;font-size:11px;font-weight:800;}
 .ind-body{display:none;padding-left:4px;}
 .ind-header.open + .ind-body{display:block;}
 
@@ -351,25 +414,19 @@ body.sb-off #main{padding-left:58px;}
 #dl-row{display:flex;gap:10px;flex-wrap:wrap;}
 .dl-chip{
   display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:10px 14px;border-radius:14px;border:2px solid #dbeafe;
-  background:#fdf6e3;min-width:86px;font-family:'Nunito',sans-serif;
+  padding:10px 14px;border-radius:14px;border:2px solid transparent;
+  background:#64748b;min-width:86px;font-family:'Nunito',sans-serif;
   transition:.2s;cursor:default;
 }
-.dl-chip.past{opacity:.45;filter:grayscale(.5);}
-.dl-chip.today{border-color:#ef4444;background:#fff5f5;box-shadow:0 0 0 3px rgba(239,68,68,.15);}
-.dl-chip.soon{border-color:#f59e0b;background:#fef9ec;box-shadow:0 2px 10px rgba(245,158,11,.2);}
-.dl-chip.upcoming{border-color:#3b82f6;background:#f0f4fd;}
+.dl-chip.past{opacity:.4;filter:grayscale(.6);}
+.dl-chip.today{border-color:#ef4444;background:#dc2626;box-shadow:0 0 0 3px rgba(239,68,68,.25);}
+.dl-chip.soon{border-color:#f59e0b;background:#b45309;box-shadow:0 2px 10px rgba(245,158,11,.3);}
+.dl-chip.upcoming{border-color:transparent;background:#475569;}
 .dl-icon{font-size:18px;}
-.dl-label{font-size:11px;font-weight:800;color:#1e3a5f;text-align:center;line-height:1.2;}
-.dl-date{font-size:12px;font-weight:700;color:#6b8fc7;}
-.dl-chip.today .dl-date,.dl-chip.today .dl-label{color:#ef4444;}
-.dl-chip.soon .dl-date,.dl-chip.soon .dl-label{color:#b45309;}
-.dl-chip.upcoming .dl-date,.dl-chip.upcoming .dl-label{color:#1d4ed8;}
-.dl-badge{font-size:10px;font-weight:800;padding:1px 7px;border-radius:8px;background:#ef4444;color:#fff;}
-.dl-badge.soon-badge{background:#f59e0b;}
-.dl-td{font-size:11px;font-weight:700;color:#6b8fc7;white-space:nowrap;}
-.dl-chip.upcoming .dl-td{color:#2563eb;}
-.dl-chip.soon .dl-td{color:#b45309;}
+.dl-label{font-size:11px;font-weight:800;color:#fff;text-align:center;line-height:1.2;}
+.dl-date{font-size:12px;font-weight:700;color:rgba(255,255,255,.85);}
+.dl-badge{font-size:10px;font-weight:800;padding:1px 7px;border-radius:8px;background:rgba(255,255,255,.25);color:#fff;}
+.dl-td{font-size:11px;font-weight:700;color:rgba(255,255,255,.75);white-space:nowrap;}
 .dl-chip.past .dl-td,.dl-chip.today .dl-td{display:none;}
 
 #ind-grid{
@@ -394,7 +451,7 @@ body.sb-off #main{padding-left:58px;}
 .ind-card.open .ind-card-head{background:#eff6ff;border-bottom:2px solid #dbeafe;}
 .ic-emoji{font-size:26px;flex-shrink:0;}
 .ic-name{font-size:15px;font-weight:800;color:#1e3a5f;flex:1;line-height:1.3;}
-.ic-cnt{font-size:12px;font-weight:700;color:#fff;background:#3b82f6;padding:2px 10px;border-radius:10px;flex-shrink:0;}
+.ic-cnt{font-size:12px;font-weight:700;color:#fff;background:#002366;padding:2px 10px;border-radius:10px;flex-shrink:0;}
 .ic-arrow{font-size:12px;color:#93c5fd;flex-shrink:0;transition:transform .2s;}
 .ind-card.open .ic-arrow{transform:rotate(180deg);}
 .ind-card-body{display:none;padding:12px 14px;flex-wrap:wrap;gap:6px;}
@@ -407,10 +464,10 @@ body.sb-off #main{padding-left:58px;}
 }
 .co-chip:hover{background:#dbeafe;color:#1d4ed8;border-color:#93c5fd;}
 .co-chip.large{
-  background:#1d4ed8;color:#fff;
-  border-color:#1d4ed8;
+  background:#223A5E;color:#fff;
+  border-color:#223A5E;
 }
-.co-chip.large:hover{background:#1e40af;border-color:#1e3a8a;}
+.co-chip.large:hover{background:#182d4a;border-color:#142540;}
 
 /* back button */
 #back-btn{
@@ -430,6 +487,8 @@ body.sb-off #main{padding-left:58px;}
 #ch-mkt{font-size:13px;margin-bottom:22px;display:flex;gap:6px;flex-wrap:wrap;}
 .tag-twse{background:#dbeafe;color:#1d4ed8;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:800;}
 .tag-otc {background:#e0f2fe;color:#0369a1;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:800;}
+.period-tag{background:#223A5E;color:#fff;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:800;white-space:nowrap;}
+.memo-cell{font-size:11px;color:#64748b;max-width:180px;word-break:break-all;cursor:help;}
 
 /* Year buttons */
 #ybtns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;}
@@ -453,7 +512,7 @@ body.sb-off #main{padding-left:58px;}
 .qc:hover{box-shadow:0 6px 24px rgba(59,130,246,.18);}
 .qh{padding:14px 20px;font-weight:900;font-size:17px;color:#1e3a5f;display:flex;align-items:center;gap:8px;background:linear-gradient(90deg,#eff6ff,#fff);border-bottom:2px solid #dbeafe;}
 .qh-icon{font-size:20px;}
-.qbody{padding:18px 20px;display:flex;gap:24px;flex-wrap:wrap;}
+.qbody{padding:14px 20px 18px;display:flex;flex-direction:column;gap:10px;}
 .qcol{flex:1;min-width:200px;}
 .qst{font-size:12px;font-weight:800;letter-spacing:.3px;margin-bottom:10px;padding:5px 14px;border-radius:20px;display:inline-flex;align-items:center;gap:5px;}
 .st-b{background:#fef3c7;color:#b45309;border:1.5px solid #fcd34d;}
@@ -485,6 +544,10 @@ tr:hover td{background:#f8fbff;}
   <div id="home">
     <div id="home-title">📊 法說會財報對應查詢</div>
     <div id="home-sub">選擇產業，再點選公司，查看各財報期前後的法說會紀錄</div>
+    <div style="display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;padding:7px 14px;background:#eff6ff;border-radius:10px;border:1.5px solid #bfdbfe;">
+      <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#223A5E;"></span>
+      <span style="font-size:12px;color:#1e3a5f;font-weight:700;">深藍色 = 實收資本額 ≥ 100億（大型股）</span>
+    </div>
     <div id="dl-section">
       <div id="dl-title">📅 台股財報截止日</div>
       <div id="dl-row"></div>
@@ -519,7 +582,15 @@ const PERIOD_ICON = {
   'Q1財報':'🌱','Q2財報':'☀️','Q3財報':'🍂','Q4財報':'❄️',
   '年報(大型股/金融)':'🏦','年報(其餘)':'📋','月營收':'📊','其他':'📌'
 };
-const PERIOD_ORDER = ['Q1財報','Q2財報','Q3財報','Q4財報','年報(大型股/金融)','年報(其餘)','月營收','其他'];
+const PERIOD_ORDER = ['Q1財報','Q2財報','Q3財報','Q4財報','年報(大型股/金融)','月營收','其他'];
+
+// Q4財報/年報 → 財報年度為申報年-1；Q1~Q3月營收 → 申報年本身
+function fiscalLabel(period, yr) {
+  if (period === 'Q4財報' || period.startsWith('年報')) {
+    return `${parseInt(yr)-1} ${period}`;
+  }
+  return `${yr} ${period}`;
+}
 
 // Build company data index from records
 const companies = {};
@@ -583,10 +654,15 @@ function renderDeadlines() {
     return count;
   }
 
+  // 大型股年報實際截止日（申報年 → [月,日]）
+  const LC_ANNUAL = {2023:[3,16], 2024:[3,15], 2025:[3,17], 2026:[3,16]};
+  function lcDate(y) {
+    const [m, d] = LC_ANNUAL[y] || [3, 15];
+    return new Date(y, m-1, d);
+  }
+
   const FIXED = [
-    {m:3, d:15, label:'年報\n大型股', icon:'🏦'},
     {m:3, d:31, label:'Q4\n財報',   icon:'❄️'},
-    {m:4, d:1,  label:'年報\n其餘', icon:'📋'},
     {m:5, d:15, label:'Q1\n財報',   icon:'🌱'},
     {m:8, d:14, label:'Q2\n財報',   icon:'☀️'},
     {m:11,d:14, label:'Q3\n財報',   icon:'🍂'},
@@ -594,11 +670,15 @@ function renderDeadlines() {
 
   let all = [];
 
-  // 季報/年報：顯示今年＋明年（涵蓋 Q4 隔年3月）
+  // 季報：今年＋明年
   for (const f of FIXED) {
     for (const y of [yr, yr + 1]) {
       all.push({date: new Date(y, f.m-1, f.d), label: f.label, icon: f.icon});
     }
+  }
+  // 大型股年報：逐年實際日期
+  for (const y of [yr, yr + 1]) {
+    all.push({date: lcDate(y), label: '年報\n大型股', icon: '🏦'});
   }
 
   // 月營收：只顯示前1個月 ～ 後5個月
@@ -809,34 +889,35 @@ function selectYear(yr) {
     function tbl(arr, cls) {
       if (!arr.length) return '<div class="empty">💤 無資料</div>';
       return `<table>
-        <tr><th>日期</th><th>時間</th><th>交易日差</th><th>財報截止日</th><th>市場</th></tr>
-        ${arr.map(r => `<tr>
-          <td>${r['日期'] || ''}</td>
-          <td>${r['召開法人說明會時間'] || ''}</td>
-          <td class="${cls}">${r['距截止日交易日']}</td>
-          <td>${r['財報錨點'] || ''}</td>
-          <td>${mktTag(r['市場'])}</td>
-        </tr>`).join('')}
+        <tr><th>日期</th><th>時間</th><th>交易日差</th><th>財報截止日</th><th>市場</th><th>說明期別</th><th>擇要訊息</th></tr>
+        ${arr.map(r => {
+          const memo = r['法人說明會擇要訊息'] || '';
+          const period = r['說明財報期'] || '';
+          const memoShort = memo.length > 30 ? memo.slice(0,30)+'…' : memo;
+          return `<tr>
+            <td>${r['日期'] || ''}</td>
+            <td>${r['召開法人說明會時間'] || ''}</td>
+            <td class="${cls}">${r['距截止日交易日']}</td>
+            <td>${r['財報錨點'] || ''}</td>
+            <td>${mktTag(r['市場'])}</td>
+            <td>${period ? `<span class="period-tag">${period}</span>` : ''}</td>
+            <td class="memo-cell" title="${memo.replace(/"/g,'&quot;')}">${memoShort}</td>
+          </tr>`;
+        }).join('')}
       </table>`;
     }
     const icon = PERIOD_ICON[period] || '📌';
     const div = document.createElement('div');
     div.className = 'qc';
     div.innerHTML = `
-      <div class="qh"><span class="qh-icon">${icon}</span>${period}</div>
+      <div class="qh"><span class="qh-icon">${icon}</span>${fiscalLabel(period, yr)}</div>
       <div class="qbody">
-        <div class="qcol">
-          <div class="qst st-b">🕐 截止日前（${before.length} 筆）</div>
-          ${tbl(sB, 'dn')}
-        </div>
-        <div class="qcol">
-          <div class="qst st-a">✅ 截止日後（${after.length} 筆）</div>
-          ${tbl(sA, 'dp')}
-        </div>
-        ${same.length ? `<div class="qcol">
-          <div class="qst st-s">🎯 截止日當天（${same.length} 筆）</div>
-          ${tbl(same, 'dz')}
-        </div>` : ''}
+        <div class="qst st-b">🕐 截止日前（${before.length} 筆）</div>
+        ${before.length ? tbl(sB, 'dn') : ''}
+        <div class="qst st-a">✅ 截止日後（${after.length} 筆）</div>
+        ${after.length ? tbl(sA, 'dp') : ''}
+        <div class="qst st-s">🎯 截止日當天（${same.length} 筆）</div>
+        ${same.length ? tbl(same, 'dz') : ''}
       </div>`;
     qs.appendChild(div);
   });
