@@ -188,7 +188,7 @@ def main():
             continue
         code = parts[0].strip().split()[0]  # "1101 台泥" → "1101"
         try:
-            cap = int(parts[1].strip().replace(',', ''))
+            cap = float(parts[1].strip().replace(',', ''))
             if cap >= LARGE_CAP_THRESHOLD:
                 large_cap_codes.add(code)
         except Exception:
@@ -248,7 +248,7 @@ def main():
             pass  # 不印 request log
 
     server = HTTPServer(('', PORT), QuietHandler)
-    url = f'http://localhost:{PORT}/法說會查詢.html'
+    url = f'http://localhost:{PORT}/index.html'
     print(f'伺服器啟動：{url}')
     print('按 Ctrl+C 停止伺服器')
 
@@ -352,13 +352,13 @@ body.sb-off #main{padding-left:58px;}
 .dl-chip{
   display:flex;flex-direction:column;align-items:center;gap:3px;
   padding:10px 14px;border-radius:14px;border:2px solid #dbeafe;
-  background:#fff;min-width:86px;font-family:'Nunito',sans-serif;
+  background:#fdf6e3;min-width:86px;font-family:'Nunito',sans-serif;
   transition:.2s;cursor:default;
 }
 .dl-chip.past{opacity:.45;filter:grayscale(.5);}
 .dl-chip.today{border-color:#ef4444;background:#fff5f5;box-shadow:0 0 0 3px rgba(239,68,68,.15);}
-.dl-chip.soon{border-color:#f59e0b;background:#fffbeb;box-shadow:0 2px 10px rgba(245,158,11,.2);}
-.dl-chip.upcoming{border-color:#3b82f6;background:#eff6ff;}
+.dl-chip.soon{border-color:#f59e0b;background:#fef9ec;box-shadow:0 2px 10px rgba(245,158,11,.2);}
+.dl-chip.upcoming{border-color:#3b82f6;background:#f0f4fd;}
 .dl-icon{font-size:18px;}
 .dl-label{font-size:11px;font-weight:800;color:#1e3a5f;text-align:center;line-height:1.2;}
 .dl-date{font-size:12px;font-weight:700;color:#6b8fc7;}
