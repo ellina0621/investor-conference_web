@@ -27,22 +27,28 @@ START_YEAR, END_YEAR = 2021, 2026
 # ---------- 擇要訊息期別解析 ----------
 
 _Q_MAP = {'一': 'Q1', '二': 'Q2', '三': 'Q3', '四': 'Q4'}
+_D_MAP = {'1': 'Q1', '2': 'Q2', '3': 'Q3', '4': 'Q4'}
 
-def extract_period_mention(text):
-    """從擇要訊息中抽出財報期別，例如 '2024年第一季' → '2024 Q1'"""
+def _q(ch):
+    return _Q_MAP.get(ch) or _D_MAP.get(ch, ch)
+
+def extract_period_mention(text, conf_date=None):
+    """從擇要訊息中抽出財報期別，例如 '114年度第4季' → '2025 Q4'
+    conf_date: 說明會日期，用於無年份時推算財報年度（Q4 → 前一年）
+    """
     if pd.isna(text) or not str(text).strip():
         return None
     t = str(text).strip()
 
-    # 西元年 + 第X季: "2024年第一季"
-    m = re.search(r'(20\d{2})年第([一二三四])季', t)
+    # 西元年 + (年度?) + 第X季 (國字或數字): "2024年第一季" / "2025年度第4季"
+    m = re.search(r'(20\d{2})年度?第([一二三四1-4])季', t)
     if m:
-        return f'{m.group(1)} {_Q_MAP[m.group(2)]}'
+        return f'{m.group(1)} {_q(m.group(2))}'
 
-    # 民國年 + 第X季: "114年第四季"
-    m = re.search(r'(1[01]\d)年第([一二三四])季', t)
+    # 民國年 + (年度?) + 第X季 (國字或數字): "114年第四季" / "114年度第4季"
+    m = re.search(r'(1[01]\d)年度?第([一二三四1-4])季', t)
     if m:
-        return f'{int(m.group(1))+1911} {_Q_MAP[m.group(2)]}'
+        return f'{int(m.group(1))+1911} {_q(m.group(2))}'
 
     # 西元年 + Q數字: "2026Q1" "2025q4"
     m = re.search(r'(20\d{2})[Qq]([1-4])', t)
@@ -54,15 +60,26 @@ def extract_period_mention(text):
     if m:
         return f'{int(m.group(1))+1911} Q{m.group(2)}'
 
-    # 西元年 + 全年/年度: "2024年度" "2024全年"
+    # 西元年 + 全年/年度/年報: "2024年度" "2024全年"
     m = re.search(r'(20\d{2})年?(?:度|全年|年報)', t)
     if m:
         return f'{m.group(1)} 年報'
 
-    # 無年份，只有第X季
-    m = re.search(r'第([一二三四])季', t)
+    # 民國年 + 年度: "114年度"
+    m = re.search(r'(1[01]\d)年度', t)
     if m:
-        return _Q_MAP[m.group(1)]
+        return f'{int(m.group(1))+1911} 年報'
+
+    # 無年份，只有第X季 (國字或數字)
+    m = re.search(r'第([一二三四1-4])季', t)
+    if m:
+        q_str = _q(m.group(1))  # e.g. "Q4"
+        if conf_date is not None and not pd.isna(conf_date):
+            yr = conf_date.year
+            # Q4 財報是前一年的，所以說明會年份 -1
+            infer_yr = yr - 1 if q_str == 'Q4' else yr
+            return f'{infer_yr} {q_str}'
+        return q_str
 
     return None
 
@@ -234,7 +251,8 @@ def main():
     # 從擇要訊息抽出說明期別
     memo_col = '法人說明會擇要訊息'
     if memo_col in all_stat.columns:
-        all_stat['說明財報期'] = all_stat[memo_col].apply(extract_period_mention)
+        all_stat['說明財報期'] = all_stat.apply(
+            lambda r: extract_period_mention(r[memo_col], r.get('日期')), axis=1)
     else:
         all_stat['說明財報期'] = None
 
