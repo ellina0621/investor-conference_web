@@ -165,7 +165,7 @@ body.sb-off #main{padding-left:58px;}
 .tag-twse{background:#dbeafe;color:#1d4ed8;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:800;}
 .tag-otc {background:#e0f2fe;color:#0369a1;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:800;}
 .period-tag{background:#223A5E;color:#fff;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:800;white-space:nowrap;}
-.memo-cell{font-size:11px;color:#64748b;max-width:180px;word-break:break-all;cursor:help;}
+.memo-cell{font-size:11px;color:#64748b;max-width:260px;word-break:break-word;}
 
 /* Year buttons */
 #ybtns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;}
@@ -570,7 +570,6 @@ function selectYear(yr) {
         ${arr.map(r => {
           const memo = r['法人說明會擇要訊息'] || '';
           const period = r['說明財報期'] || '';
-          const memoShort = memo.length > 30 ? memo.slice(0,30)+'…' : memo;
           return `<tr>
             <td>${r['日期'] || ''}</td>
             <td>${r['召開法人說明會時間'] || ''}</td>
@@ -578,7 +577,7 @@ function selectYear(yr) {
             <td>${r['財報錨點'] || ''}</td>
             <td>${mktTag(r['市場'])}</td>
             <td>${period ? `<span class="period-tag">${period}</span>` : ''}</td>
-            <td class="memo-cell" title="${memo.replace(/"/g,'&quot;')}">${memoShort}</td>
+            <td class="memo-cell">${memo}</td>
           </tr>`;
         }).join('')}
       </table>`;
