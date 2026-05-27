@@ -15,7 +15,10 @@ BASE      = r'E:\法說會+主動型'
 TWSE_PATH = os.path.join(BASE, '上市法說會')
 OTC_PATH  = os.path.join(BASE, '上櫃法說會')
 FIRM_CSV  = os.path.join(BASE, 'firm_data.csv')
+CAP_CSV   = os.path.join(BASE, '實收資本額.csv')
 OUT_HTML  = os.path.join(BASE, 'index.html')
+
+LARGE_CAP_THRESHOLD = 10_000_000_000  # 100億元
 
 START_YEAR, END_YEAR = 2021, 2026
 
@@ -173,6 +176,25 @@ def main():
     otc  = attach_anchor_info(otc,  anchors, trading_arr)
     all_stat = pd.concat([twse, otc], ignore_index=True)
 
+    # 讀取實收資本額（判斷大型股 ≥ 100億）
+    print('讀取實收資本額.csv…')
+    with open(CAP_CSV, 'rb') as f:
+        cap_text = f.read().decode('utf-16')
+    cap_lines = cap_text.splitlines()
+    large_cap_codes = set()
+    for line in cap_lines[1:]:
+        parts = line.split('\t')
+        if len(parts) < 2:
+            continue
+        code = parts[0].strip().split()[0]  # "1101 台泥" → "1101"
+        try:
+            cap = int(parts[1].strip().replace(',', ''))
+            if cap >= LARGE_CAP_THRESHOLD:
+                large_cap_codes.add(code)
+        except Exception:
+            pass
+    print(f'  大型股(>=100億)：{len(large_cap_codes)} 家')
+
     # 讀取 firm_data（TSE 產業分組）
     print('讀取 firm_data.csv…')
     firm_df = pd.read_csv(FIRM_CSV, encoding='utf-16', sep='\t')
@@ -205,11 +227,13 @@ def main():
     data_json       = json.dumps(ex.to_dict(orient='records'), ensure_ascii=False)
     firm_info_json  = json.dumps(firm_info, ensure_ascii=False)
     industries_json = json.dumps(industries, ensure_ascii=False)
+    large_cap_json  = json.dumps(sorted(large_cap_codes), ensure_ascii=False)
 
     html = (HTML_TEMPLATE
             .replace('__DATA__', data_json)
             .replace('__FIRM_INFO__', firm_info_json)
-            .replace('__INDUSTRIES__', industries_json))
+            .replace('__INDUSTRIES__', industries_json)
+            .replace('__LARGE_CAP__', large_cap_json))
     with open(OUT_HTML, 'w', encoding='utf-8') as f:
         f.write(html)
 
@@ -382,6 +406,11 @@ body.sb-off #main{padding-left:58px;}
   border:1.5px solid #dbeafe;transition:.15s;
 }
 .co-chip:hover{background:#dbeafe;color:#1d4ed8;border-color:#93c5fd;}
+.co-chip.large{
+  background:#1d4ed8;color:#fff;
+  border-color:#1d4ed8;
+}
+.co-chip.large:hover{background:#1e40af;border-color:#1e3a8a;}
 
 /* back button */
 #back-btn{
@@ -484,6 +513,7 @@ function toggleSb() {
 const RECORDS    = __DATA__;
 const FIRM_INFO  = __FIRM_INFO__;
 const INDUSTRIES = __INDUSTRIES__;
+const LARGE_CAP  = new Set(__LARGE_CAP__);
 
 const PERIOD_ICON = {
   'Q1財報':'🌱','Q2財報':'☀️','Q3財報':'🍂','Q4財報':'❄️',
@@ -628,9 +658,10 @@ function renderHomeGrid() {
     const short = indShort(ind);
     const emoji = indEmoji(short);
     const isOpen = openCards.has(ind);
-    const chips = validCodes.map(c =>
-      `<span class="co-chip" onclick="selectCompany('${c}')">${c} ${companies[c].name || ''}</span>`
-    ).join('');
+    const chips = validCodes.map(c => {
+      const isLarge = LARGE_CAP.has(c);
+      return `<span class="co-chip${isLarge ? ' large' : ''}" onclick="selectCompany('${c}')" title="${isLarge ? '大型股（實收資本額≥100億）' : ''}">${c} ${companies[c].name || ''}</span>`;
+    }).join('');
     html += `<div class="ind-card${isOpen ? ' open' : ''}" id="icard-${escId(ind)}">
       <div class="ind-card-head" onclick="toggleIndCard('${escAttr(ind)}')">
         <span class="ic-emoji">${emoji}</span>
