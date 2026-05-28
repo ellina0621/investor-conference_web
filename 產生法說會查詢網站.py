@@ -8,9 +8,21 @@ import os
 import re
 import threading
 import webbrowser
+from datetime import date, datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+import time
+import urllib3
 import pandas as pd
 import exchange_calendars as xcals
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select, WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE      = r'E:\法說會+主動型'
 TWSE_PATH = os.path.join(BASE, '上市法說會')
@@ -20,7 +32,9 @@ CAP_CSV   = os.path.join(BASE, '實收資本額.csv')
 OUT_HTML  = os.path.join(BASE, 'index.html')
 
 LARGE_CAP_THRESHOLD = 10_000_000_000  # 100億元
-PKL_PATH = os.path.join(BASE, '財報_df.pkl')
+PKL_PATH            = os.path.join(BASE, '財報_df.pkl')
+UPCOMING_IR_CACHE   = os.path.join(BASE, 'upcoming_ir_cache.json')
+MOPS_IR_URL         = 'https://mopsov.twse.com.tw/mops/web/t100sb02_1'
 
 START_YEAR, END_YEAR = 2021, 2026
 
@@ -229,6 +243,277 @@ def load_market(folder, market_label):
     return combined
 
 
+# ---------- 法說會爬蟲（參照法說會時間.py）----------
+
+def _ir_norm_date(value: str) -> str:
+    if not value:
+        return ''
+    m = re.search(r'(\d{3,4})[/年](\d{1,2})[/月](\d{1,2})', value)
+    if not m:
+        return value.strip()
+    year = int(m.group(1))
+    if year < 1911:
+        year += 1911
+    return f'{year:04d}/{int(m.group(2)):02d}/{int(m.group(3)):02d}'
+
+
+def _ir_norm_time(value: str) -> str:
+    if not value:
+        return ''
+    m = re.search(r'(\d{1,2})[:：](\d{2})', value) or \
+        re.search(r'(\d{1,2})時(\d{2})分?', value)
+    if not m:
+        return value.strip()
+    return f'{int(m.group(1)):02d}:{m.group(2)}'
+
+
+class MopsConferenceScraper:
+    MARKET_TYPES = ['sii', 'otc', 'rotc']
+    FIELD_MAP = {
+        'co_code':  ['公司代號', '代號', '股票代號'],
+        'co_name':  ['公司名稱', '名稱'],
+        'date':     ['召開法人說明會日期', '召開法人說明會之日期', '說明會日期', '日期', '召開日期'],
+        'time':     ['召開法人說明會時間', '召開法人說明會之時間', '說明會時間', '時間', '召開時間'],
+        'location': ['召開法人說明會地點', '召開法人說明會之地點', '說明會地點', '地點', '召開地點'],
+        'detail':   ['法人說明會擇要訊息', '擇要訊息', '說明', '備註'],
+    }
+    VIDEO_LINK_HEADERS  = ['影音連結資訊', '影音連結', '視訊連結', '連結資訊']
+    OTHER_INFO_HEADERS  = ['其他應敘明事項', '其他應敘述事項', '其他事項', '應敘明事項', '應敘述事項', '備註說明']
+    _URL_RE = re.compile(r'https?://[^\s<>"\'\)]+')
+
+    def __init__(self):
+        self.driver = None
+
+    def _init_driver(self):
+        opts = Options()
+        opts.add_argument('--headless')
+        opts.add_argument('--window-size=1920,1080')
+        opts.add_argument('--no-sandbox')
+        opts.add_argument('--disable-dev-shm-usage')
+        self.driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()), options=opts)
+
+    def _quit_driver(self):
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+
+    def scrape(self) -> list:
+        today = datetime.today()
+        months = []
+        for i in range(3):
+            total = today.month - 1 + i
+            months.append((today.year + total // 12, total % 12 + 1))
+        self._init_driver()
+        all_events, seen = [], set()
+        try:
+            for year, month in months:
+                for typek in self.MARKET_TYPES:
+                    for ev in self._scrape_month(year, month, typek):
+                        k = (ev.get('co_code', ''), ev.get('date', ''), ev.get('time', ''))
+                        if k not in seen:
+                            seen.add(k)
+                            all_events.append(ev)
+        finally:
+            self._quit_driver()
+        return all_events
+
+    def _scrape_month(self, year: int, month: int, typek: str) -> list:
+        roc_year = year - 1911
+        print(f'  [爬取] 民國{roc_year}年{month}月 {typek}...')
+        try:
+            self.driver.get(MOPS_IR_URL)
+            wait = WebDriverWait(self.driver, 20)
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+            time.sleep(1.5)
+            self._set_typek(typek)
+            self._set_year(roc_year)
+            self._set_month(month)
+            if not self._submit_form(wait):
+                self.driver.execute_script("""
+                    var names=['month','MONTH','mon'];
+                    for(var i=0;i<names.length;i++){
+                        var s=document.querySelector('select[name="'+names[i]+'"]');
+                        if(s&&s.form){s.form.submit();break;}
+                    }
+                """)
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        lambda d: len(d.find_elements(By.CSS_SELECTOR, 'table tr')) > 3)
+                except Exception:
+                    pass
+                time.sleep(2)
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            events = self._parse_events(soup)
+            print(f'  [爬取] {year}/{month:02d}: {len(events)} 筆')
+            return events
+        except Exception as e:
+            print(f'  [爬取] {year}/{month:02d} 失敗: {e}')
+            return []
+
+    def _set_typek(self, typek):
+        for val in [typek, typek.upper()]:
+            rs = self.driver.find_elements(By.XPATH, f"//input[@type='radio' and @name='TYPEK' and @value='{val}']")
+            if rs:
+                rs[0].click(); return
+        for css in ["select[name='TYPEK']", "select[id='TYPEK']"]:
+            els = self.driver.find_elements(By.CSS_SELECTOR, css)
+            if els:
+                sel = Select(els[0])
+                for v in [typek, typek.upper()]:
+                    try:
+                        sel.select_by_value(v); return
+                    except Exception:
+                        pass
+
+    def _set_year(self, roc_year):
+        for css in ['input[name="year"]', 'input[name="YEAR"]', 'input[name="Year"]', 'input[id="year"]']:
+            els = self.driver.find_elements(By.CSS_SELECTOR, css)
+            if els:
+                els[0].clear(); els[0].send_keys(str(roc_year)); return
+
+    def _set_month(self, month):
+        for css in ['select[name="month"]', 'select[name="MONTH"]', 'select[name="mon"]', 'select[id="month"]']:
+            els = self.driver.find_elements(By.CSS_SELECTOR, css)
+            if not els:
+                continue
+            sel = Select(els[0])
+            for v in [f'{month:02d}', str(month)]:
+                try:
+                    sel.select_by_value(v); return
+                except Exception:
+                    pass
+            try:
+                sel.select_by_index(month); return
+            except Exception:
+                pass
+        for val in [f'{month:02d}', str(month)]:
+            rs = self.driver.find_elements(By.XPATH, f"//input[@type='radio' and @value='{val}']")
+            if rs:
+                rs[0].click(); return
+
+    def _submit_form(self, wait):
+        for xpath in ["//input[@value='查詢']", "//input[@type='submit']",
+                      "//button[contains(text(),'查詢')]", "//input[@value='送出']"]:
+            els = self.driver.find_elements(By.XPATH, xpath)
+            if els:
+                els[0].click()
+                try:
+                    wait.until(EC.presence_of_element_located((By.TAG_NAME, 'table')))
+                except Exception:
+                    time.sleep(2)
+                return True
+        return False
+
+    def _parse_events(self, soup) -> list:
+        target_table = None
+        for table in soup.find_all('table'):
+            text = table.get_text()
+            if ('代號' in text or '公司代號' in text) and ('日期' in text or '時間' in text or '地點' in text):
+                target_table = table
+                break
+        if not target_table:
+            return []
+        rows = target_table.find_all('tr')
+        headers, events = [], []
+        for row in rows:
+            cells = row.find_all(['th', 'td'])
+            texts = [c.get_text(separator=' ', strip=True) for c in cells]
+            if not headers and any('代號' in t for t in texts):
+                headers = texts; continue
+            if not headers or len(texts) < 3:
+                continue
+            ev = self._map_row(headers, texts, cells)
+            if ev:
+                events.append(ev)
+        return events
+
+    def _map_row(self, headers, texts, cells=None):
+        row_dict = {headers[i]: texts[i] for i in range(min(len(headers), len(texts)))}
+        ev = {}
+        for field, candidates in self.FIELD_MAP.items():
+            for key in candidates:
+                if row_dict.get(key):
+                    ev[field] = row_dict[key]; break
+        if not ev.get('co_code') and texts:
+            ev['co_code'] = texts[0]
+        if not ev.get('co_name') and len(texts) >= 2:
+            ev['co_name'] = texts[1]
+        if not ev.get('co_code') or ev['co_code'] in ('公司代號', '代號'):
+            return None
+        ev['date'] = _ir_norm_date(ev.get('date', ''))
+        ev['time'] = _ir_norm_time(ev.get('time', ''))
+        if cells:
+            n_extra = max(0, len(cells) - len(headers))
+            for i, header in enumerate(headers):
+                if i >= len(cells):
+                    break
+                ci_list = [i + n_extra, i] if n_extra > 0 and (i + n_extra) < len(cells) else [i]
+                if any(kw in header for kw in self.VIDEO_LINK_HEADERS):
+                    for ci in ci_list:
+                        cell = cells[ci]
+                        urls = [a['href'].strip() for a in cell.find_all('a', href=True) if a['href'].strip().startswith('http')]
+                        if not urls:
+                            urls = self._URL_RE.findall(cell.get_text(' ', strip=True))
+                        if urls:
+                            ev['video_links'] = urls; break
+                elif any(kw in header for kw in self.OTHER_INFO_HEADERS):
+                    for ci in ci_list:
+                        text = cells[ci].get_text(separator='\n', strip=True)
+                        if 'http' in text.lower():
+                            continue
+                        clean = text.strip().rstrip('。.')
+                        if clean and clean not in ('', '無', '-', '無資料', 'N/A'):
+                            ev['other_info'] = text.strip(); break
+        return ev
+
+
+def scrape_upcoming_ir():
+    """爬取近期法說會，更新快取，回傳 (全部未來事件, 新event keys集合)"""
+    today_str = date.today().strftime('%Y/%m/%d')
+
+    # 載入上次快取
+    cached_keys: set = set()
+    if os.path.exists(UPCOMING_IR_CACHE):
+        try:
+            with open(UPCOMING_IR_CACHE, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            cached_keys = {
+                f"{e.get('co_code','')}|{e.get('date','')}|{e.get('time','')}"
+                for e in cached
+            }
+        except Exception:
+            pass
+
+    scraper = MopsConferenceScraper()
+    raw = scraper.scrape()
+
+    # 只保留今天以後
+    upcoming = [ev for ev in raw if ev.get('date', '') >= today_str]
+    upcoming.sort(key=lambda e: (e.get('date', ''), e.get('time', '')))
+
+    # 記錄哪些是新的
+    new_keys: set = set()
+    for ev in upcoming:
+        k = f"{ev.get('co_code','')}|{ev.get('date','')}|{ev.get('time','')}"
+        if k not in cached_keys:
+            new_keys.add(k)
+
+    print(f'  近期法說：{len(upcoming)} 筆，新增：{len(new_keys)} 筆')
+
+    # 存快取（下次比較用）
+    try:
+        with open(UPCOMING_IR_CACHE, 'w', encoding='utf-8') as f:
+            json.dump(upcoming, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f'  [警告] 快取儲存失敗：{e}')
+
+    return upcoming, new_keys
+
+
 def main():
     print('讀取財報_df.pkl…')
     df = pd.read_pickle(PKL_PATH)
@@ -347,11 +632,76 @@ def main():
     industries_json = json.dumps(industries, ensure_ascii=False)
     large_cap_json  = json.dumps(sorted(large_cap_codes), ensure_ascii=False)
 
+    # 已通過但尚未舉行法說會的公司（只顯示近期相關財報期）
+    curr_year = date.today().year
+    prev_year = curr_year - 1
+    _valid_periods = {
+        f'{prev_year} 年報',
+        f'{prev_year} Q4',
+        f'{curr_year} Q1',
+        f'{curr_year} Q2',
+        f'{curr_year} Q3',
+    }
+    _no_ir = ex['法說日'].isna() if '法說日' in ex.columns else pd.Series(True, index=ex.index)
+    if '說明財報期' in ex.columns:
+        _no_ir = _no_ir & ex['說明財報期'].isin(_valid_periods)
+    pending_base = ex[_no_ir].sort_values('日期', ascending=False).copy()
+    print(f'  待法說（未過濾）：{len(pending_base):,} 筆（財報期限：{sorted(_valid_periods)}）')
+
+    # 爬取近期法說會
+    print('爬取近期法說會（MOPS）…')
+    upcoming_all = []
+    _new_ev_keys: set = set()
+    try:
+        upcoming_all, _new_ev_keys = scrape_upcoming_ir()
+    except Exception as _e:
+        print(f'  [警告] 法說爬取失敗：{_e}')
+
+    # 比對 pending vs upcoming → 分兩個 board
+    upcoming_by_code: dict = {}
+    for _ev in upcoming_all:
+        _code = str(_ev.get('co_code', '')).strip()
+        if _code:
+            upcoming_by_code.setdefault(_code, []).append(_ev)
+
+    _codes_s = pending_base['公司代號'].astype(str).str.strip()
+    _mask_up = _codes_s.isin(upcoming_by_code)
+
+    pending_no_ir_df  = pending_base[~_mask_up].copy()
+    pending_has_ir_df = pending_base[_mask_up].copy()
+
+    # 新增即將法說詳情 + 是否新爬到
+    if not pending_has_ir_df.empty:
+        _ph_codes = pending_has_ir_df['公司代號'].astype(str).str.strip()
+        pending_has_ir_df['即將法說日']   = _ph_codes.apply(
+            lambda c: upcoming_by_code[c][0].get('date', '') if c in upcoming_by_code else '')
+        pending_has_ir_df['即將法說時間'] = _ph_codes.apply(
+            lambda c: upcoming_by_code[c][0].get('time', '') if c in upcoming_by_code else '')
+        pending_has_ir_df['即將法說地點'] = _ph_codes.apply(
+            lambda c: upcoming_by_code[c][0].get('location', '') if c in upcoming_by_code else '')
+        # True = 這次爬蟲才首次出現的法說
+        pending_has_ir_df['即將法說新']   = _ph_codes.apply(
+            lambda c: any(
+                f"{c}|{ev.get('date','')}|{ev.get('time','')}" in _new_ev_keys
+                for ev in upcoming_by_code.get(c, [])
+            )
+        )
+
+    print(f'  待法說：{len(pending_no_ir_df):,} 筆　即將法說：{len(pending_has_ir_df):,} 筆')
+
+    def _df_to_json(df):
+        return json.dumps(df.where(df.notna(), other=None).to_dict(orient='records'), ensure_ascii=False)
+
+    pending_ir_json  = _df_to_json(pending_no_ir_df)
+    upcoming_ir_json = _df_to_json(pending_has_ir_df)
+
     html = (HTML_TEMPLATE
             .replace('__DATA__', data_json)
             .replace('__FIRM_INFO__', firm_info_json)
             .replace('__INDUSTRIES__', industries_json)
-            .replace('__LARGE_CAP__', large_cap_json))
+            .replace('__LARGE_CAP__', large_cap_json)
+            .replace('__PENDING_IR__', pending_ir_json)
+            .replace('__UPCOMING_IR__', upcoming_ir_json))
     with open(OUT_HTML, 'w', encoding='utf-8') as f:
         f.write(html)
 
@@ -545,6 +895,131 @@ body.sb-off #main{padding-left:58px;}
 .period-tag{background:#223A5E;color:#fff;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:800;white-space:nowrap;}
 .memo-cell{font-size:11px;color:#64748b;max-width:260px;word-break:break-word;}
 
+/* ── PENDING IR PANEL ── */
+#pending-btn{
+  position:fixed;top:14px;right:20px;z-index:999;
+  padding:8px 16px;border-radius:12px;
+  background:#1e3a5f;border:none;color:#60a5fa;
+  font-size:13px;font-weight:800;cursor:pointer;
+  display:flex;align-items:center;gap:8px;
+  box-shadow:0 2px 10px rgba(0,0,0,.3);
+  font-family:'Nunito',sans-serif;transition:.2s;
+}
+#pending-btn:hover{background:#2d5a8a;color:#bfdbfe;}
+#pending-cnt{background:#ef4444;color:#fff;border-radius:8px;padding:1px 8px;font-size:11px;font-weight:900;}
+#pending-overlay{display:none;position:fixed;inset:0;z-index:990;background:rgba(0,20,50,.45);}
+#pending-overlay.open{display:block;}
+#pending-panel{
+  display:none;position:fixed;top:0;right:0;bottom:0;
+  width:calc(100% - 280px);background:#f0f6ff;
+  z-index:991;flex-direction:column;overflow:hidden;
+  box-shadow:-6px 0 30px rgba(0,0,0,.2);
+}
+body.sb-off #pending-panel{width:100%;}
+#pending-panel.open{display:flex;}
+#pending-head{
+  padding:14px 28px;background:#0d2137;flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;
+}
+#pending-head h2{color:#60a5fa;font-size:17px;font-weight:900;margin:0;}
+#pending-close{
+  background:none;border:2px solid #1e3a5f;color:#93c5fd;
+  border-radius:10px;padding:6px 16px;cursor:pointer;
+  font-size:13px;font-weight:800;font-family:'Nunito',sans-serif;transition:.2s;
+}
+#pending-close:hover{background:#1e3a5f;color:#fff;}
+#pending-body{flex:1;overflow-y:auto;padding:20px 28px;}
+#pending-body::-webkit-scrollbar{width:5px;}
+#pending-body::-webkit-scrollbar-thumb{background:#bfdbfe;border-radius:5px;}
+#p-meta{font-size:13px;color:#6b8fc7;font-weight:700;margin-bottom:14px;}
+#ptable{width:100%;border-collapse:collapse;font-size:13px;background:#fff;
+  border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(59,130,246,.1);}
+#ptable th{
+  padding:10px 12px;background:#0d2137;color:#93c5fd;
+  font-size:12px;font-weight:800;text-align:left;
+  cursor:pointer;user-select:none;white-space:nowrap;
+}
+#ptable th:hover{background:#1e3a5f;color:#bfdbfe;}
+#ptable th.asc::after{content:' ▲';}
+#ptable th.desc::after{content:' ▼';}
+#ptable td{padding:8px 12px;color:#1e3a5f;border-bottom:1px solid #f0f6ff;}
+#ptable tr:last-child td{border-bottom:none;}
+#ptable tr:hover td{background:#f8fbff;}
+
+/* Panel search bar */
+.panel-search-bar{padding:10px 28px 0;flex-shrink:0;}
+.panel-search-bar input{
+  width:100%;padding:8px 14px;border:2px solid #1e3a5f;border-radius:12px;
+  background:#112233;color:#bfdbfe;font-size:14px;font-family:'Nunito',sans-serif;outline:none;
+  transition:.2s;
+}
+.panel-search-bar input:focus{border-color:#3b82f6;}
+.panel-search-bar input::placeholder{color:#2d5a8a;}
+#upcoming-panel .panel-search-bar input{
+  background:#fff;color:#1e3a5f;border-color:#93c5fd;
+}
+#upcoming-panel .panel-search-bar input:focus{border-color:#2A5470;}
+#upcoming-panel .panel-search-bar input::placeholder{color:#93c5fd;}
+
+/* Upcoming IR panel */
+#upcoming-btn{
+  position:fixed;top:14px;right:200px;z-index:999;
+  padding:8px 16px;border-radius:12px;
+  background:#14532d;border:none;color:#4ade80;
+  font-size:13px;font-weight:800;cursor:pointer;
+  display:flex;align-items:center;gap:8px;
+  box-shadow:0 2px 10px rgba(0,0,0,.3);
+  font-family:'Nunito',sans-serif;transition:.2s;
+}
+#upcoming-btn:hover{background:#166534;color:#bbf7d0;}
+#upcoming-cnt{background:#16a34a;color:#fff;border-radius:8px;padding:1px 8px;font-size:11px;font-weight:900;}
+#upcoming-overlay{display:none;position:fixed;inset:0;z-index:990;background:rgba(0,20,50,.45);}
+#upcoming-overlay.open{display:block;}
+#upcoming-panel{
+  display:none;position:fixed;top:0;right:0;bottom:0;
+  width:calc(100% - 280px);background:#eef4ff;
+  z-index:991;flex-direction:column;overflow:hidden;
+  box-shadow:-6px 0 30px rgba(0,0,0,.2);
+}
+body.sb-off #upcoming-panel{width:100%;}
+#upcoming-panel.open{display:flex;}
+#upcoming-head{
+  padding:14px 28px;background:#2A5470;flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;
+}
+#upcoming-head h2{color:#B0E2FF;font-size:17px;font-weight:900;margin:0;flex:1;text-align:center;}
+#upcoming-close{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:7px 18px;border-radius:12px;
+  border:2px solid #B0E2FF;background:rgba(255,255,255,.08);
+  color:#B0E2FF;font-size:13px;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif;transition:.2s;
+}
+#upcoming-close:hover{background:rgba(176,226,255,.2);color:#fff;border-color:#fff;}
+#upcoming-body{flex:1;overflow-y:auto;padding:20px 28px;}
+#upcoming-body::-webkit-scrollbar{width:5px;}
+#upcoming-body::-webkit-scrollbar-thumb{background:#93c5fd;border-radius:5px;}
+#u-meta{font-size:13px;color:#2A5470;font-weight:700;margin-bottom:14px;}
+#utable{width:100%;border-collapse:collapse;font-size:13px;background:#fff;
+  border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(42,84,112,.12);}
+#utable th{
+  padding:10px 12px;background:#2A5470;color:#B0E2FF;
+  font-size:12px;font-weight:800;text-align:left;
+  cursor:pointer;user-select:none;white-space:nowrap;
+}
+#utable th:hover{background:#1e3a5f;color:#bfdbfe;}
+#utable th.asc::after{content:' ▲';}
+#utable th.desc::after{content:' ▼';}
+#utable td{padding:8px 12px;color:#1e3a5f;border-bottom:1px solid #eef4ff;}
+#utable tr:last-child td{border-bottom:none;}
+#utable tr:hover td{background:#f0f6ff;}
+.new-badge{
+  display:inline-block;background:#ef4444;color:#fff;
+  font-size:10px;font-weight:900;letter-spacing:.3px;
+  padding:1px 6px;border-radius:6px;margin-left:5px;
+  vertical-align:middle;line-height:1.5;
+}
+
 /* Year buttons */
 #ybtns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;}
 .yb{
@@ -587,6 +1062,63 @@ tr:hover td{background:#f8fbff;}
 </head>
 <body>
 <button id="sb-toggle" onclick="toggleSb()" title="展開/收合側欄">☰</button>
+<button id="upcoming-btn" onclick="openUpcoming()">📅 即將法說 <span id="upcoming-cnt">0</span></button>
+<button id="pending-btn" onclick="openPending()">📋 待法說 <span id="pending-cnt">0</span></button>
+<div id="upcoming-overlay" onclick="closeUpcoming()"></div>
+<div id="upcoming-panel">
+  <div id="upcoming-head">
+    <button id="upcoming-close" onclick="closeUpcoming()">← 返回</button>
+    <h2>📅 董事會已通過、即將舉行法說會</h2>
+    <div style="width:90px"></div>
+  </div>
+  <div class="panel-search-bar">
+    <input id="upcoming-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderUpcoming()">
+  </div>
+  <div id="upcoming-body">
+    <div id="u-meta"></div>
+    <table id="utable">
+      <thead><tr>
+        <th data-col="公司代號" onclick="sortU('公司代號')">代號</th>
+        <th data-col="公司名稱" onclick="sortU('公司名稱')">名稱</th>
+        <th data-col="市場" onclick="sortU('市場')">市場</th>
+        <th data-col="說明財報期" onclick="sortU('說明財報期')">財報期</th>
+        <th data-col="日期" onclick="sortU('日期')">通過日</th>
+        <th data-col="財報錨點" onclick="sortU('財報錨點')">截止日</th>
+        <th data-col="即將法說日" onclick="sortU('即將法說日')">即將法說日</th>
+        <th data-col="即將法說時間" onclick="sortU('即將法說時間')">時間</th>
+        <th>地點</th>
+        <th>公告主旨</th>
+      </tr></thead>
+      <tbody id="utbody"></tbody>
+    </table>
+  </div>
+</div>
+<div id="pending-overlay" onclick="closePending()"></div>
+<div id="pending-panel">
+  <div id="pending-head">
+    <h2>📋 董事會已通過、尚未舉行法說會</h2>
+    <button id="pending-close" onclick="closePending()">✕ 關閉</button>
+  </div>
+  <div class="panel-search-bar">
+    <input id="pending-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderPending()">
+  </div>
+  <div id="pending-body">
+    <div id="p-meta"></div>
+    <table id="ptable">
+      <thead><tr>
+        <th data-col="公司代號" onclick="sortP('公司代號')">代號</th>
+        <th data-col="公司名稱" onclick="sortP('公司名稱')">名稱</th>
+        <th data-col="市場" onclick="sortP('市場')">市場</th>
+        <th data-col="說明財報期" onclick="sortP('說明財報期')">財報期</th>
+        <th data-col="日期" onclick="sortP('日期')">通過日</th>
+        <th data-col="財報錨點" onclick="sortP('財報錨點')">截止日</th>
+        <th data-col="距截止日交易日" onclick="sortP('距截止日交易日')">距截止(交易日)</th>
+        <th>公告主旨</th>
+      </tr></thead>
+      <tbody id="ptbody"></tbody>
+    </table>
+  </div>
+</div>
 <div id="sb">
   <div id="sb-top">
     <div id="sb-logo">📊 法說會查詢<span>財報期對應一覽</span></div>
@@ -632,6 +1164,8 @@ const RECORDS    = __DATA__;
 const FIRM_INFO  = __FIRM_INFO__;
 const INDUSTRIES = __INDUSTRIES__;
 const LARGE_CAP  = new Set(__LARGE_CAP__);
+const PENDING_IR  = __PENDING_IR__;
+const UPCOMING_IR = __UPCOMING_IR__;
 
 const PERIOD_ICON = {
   'Q1財報':'🌱','Q2財報':'☀️','Q3財報':'🍂','Q4財報':'❄️',
@@ -987,6 +1521,127 @@ function selectYear(yr) {
     qs.appendChild(div);
   });
 }
+
+// ── Pending IR panel ──────────────────────────────────────────
+let pSortCol = '日期';
+let pSortAsc = false;
+
+function openPending() {
+  document.getElementById('pending-panel').classList.add('open');
+  document.getElementById('pending-overlay').classList.add('open');
+  renderPending();
+}
+function closePending() {
+  document.getElementById('pending-panel').classList.remove('open');
+  document.getElementById('pending-overlay').classList.remove('open');
+}
+function sortP(col) {
+  if (pSortCol === col) pSortAsc = !pSortAsc;
+  else { pSortCol = col; pSortAsc = true; }
+  renderPending();
+}
+function renderPending() {
+  const q = (document.getElementById('pending-search')?.value || '').toLowerCase().trim();
+  const data = [...PENDING_IR].filter(r => {
+    if (!q) return true;
+    return String(r['公司代號']||'').includes(q) ||
+           String(r['公司名稱']||'').toLowerCase().includes(q);
+  }).sort((a, b) => {
+    let va = a[pSortCol], vb = b[pSortCol];
+    if (va == null) va = ''; if (vb == null) vb = '';
+    if (typeof va === 'number' && typeof vb === 'number')
+      return pSortAsc ? va - vb : vb - va;
+    return pSortAsc
+      ? String(va).localeCompare(String(vb), 'zh-TW')
+      : String(vb).localeCompare(String(va), 'zh-TW');
+  });
+  document.querySelectorAll('#ptable th[data-col]').forEach(th => {
+    th.classList.remove('asc','desc');
+    if (th.dataset.col === pSortCol) th.classList.add(pSortAsc ? 'asc' : 'desc');
+  });
+  document.getElementById('p-meta').textContent = `共 ${data.length} 筆（總計 ${PENDING_IR.length} 筆）`;
+  document.getElementById('ptbody').innerHTML = data.map(r => {
+    const td = r['距截止日交易日'];
+    const isLarge = LARGE_CAP.has(String(r['公司代號'] || '').trim());
+    const mkt = r['市場'] || '';
+    const mktHtml = mkt ? `<span class="${mkt.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${mkt}</span>` : '';
+    const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
+    return `<tr>
+      <td><strong style="${isLarge ? 'color:#1d4ed8' : ''}">${r['公司代號']||''}</strong></td>
+      <td>${r['公司名稱']||''}</td>
+      <td>${mktHtml}</td>
+      <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
+      <td>${r['日期']||''}</td>
+      <td>${r['財報錨點']||''}</td>
+      <td class="${td!=null?(td<0?'dp':'dn'):''}" style="font-weight:800;text-align:center">${td!=null?td:'—'}</td>
+      <td class="memo-cell" title="${subj}">${r['主旨']||''}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Upcoming IR panel ─────────────────────────────────────────
+let uSortCol = '即將法說日';
+let uSortAsc = true;
+
+function openUpcoming() {
+  document.getElementById('upcoming-panel').classList.add('open');
+  document.getElementById('upcoming-overlay').classList.add('open');
+  renderUpcoming();
+}
+function closeUpcoming() {
+  document.getElementById('upcoming-panel').classList.remove('open');
+  document.getElementById('upcoming-overlay').classList.remove('open');
+}
+function sortU(col) {
+  if (uSortCol === col) uSortAsc = !uSortAsc;
+  else { uSortCol = col; uSortAsc = true; }
+  renderUpcoming();
+}
+function renderUpcoming() {
+  const q = (document.getElementById('upcoming-search')?.value || '').toLowerCase().trim();
+  const data = [...UPCOMING_IR].filter(r => {
+    if (!q) return true;
+    return String(r['公司代號']||'').includes(q) ||
+           String(r['公司名稱']||'').toLowerCase().includes(q);
+  }).sort((a, b) => {
+    let va = a[uSortCol], vb = b[uSortCol];
+    if (va == null) va = ''; if (vb == null) vb = '';
+    if (typeof va === 'number' && typeof vb === 'number')
+      return uSortAsc ? va - vb : vb - va;
+    return uSortAsc
+      ? String(va).localeCompare(String(vb), 'zh-TW')
+      : String(vb).localeCompare(String(va), 'zh-TW');
+  });
+  document.querySelectorAll('#utable th[data-col]').forEach(th => {
+    th.classList.remove('asc','desc');
+    if (th.dataset.col === uSortCol) th.classList.add(uSortAsc ? 'asc' : 'desc');
+  });
+  document.getElementById('u-meta').textContent = `共 ${data.length} 筆（總計 ${UPCOMING_IR.length} 筆）`;
+  document.getElementById('utbody').innerHTML = data.map(r => {
+    const isLarge = LARGE_CAP.has(String(r['公司代號']||'').trim());
+    const isNew   = r['即將法說新'] === true;
+    const mkt = r['市場'] || '';
+    const mktHtml = mkt ? `<span class="${mkt.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${mkt}</span>` : '';
+    const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
+    return `<tr>
+      <td><strong style="${isLarge ? 'color:#1d4ed8' : ''}">${r['公司代號']||''}</strong>${isNew ? '<span class="new-badge">NEW</span>' : ''}</td>
+      <td>${r['公司名稱']||''}</td>
+      <td>${mktHtml}</td>
+      <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
+      <td>${r['日期']||''}</td>
+      <td>${r['財報錨點']||''}</td>
+      <td style="color:#1d4ed8;font-weight:800">${r['即將法說日']||'—'}</td>
+      <td>${r['即將法說時間']||'—'}</td>
+      <td style="font-size:11px;max-width:130px;word-break:break-word">${r['即將法說地點']||'—'}</td>
+      <td class="memo-cell" title="${subj}">${r['主旨']||''}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('pending-cnt').textContent  = PENDING_IR.length;
+  document.getElementById('upcoming-cnt').textContent = UPCOMING_IR.length;
+});
 </script>
 </body>
 </html>"""
