@@ -20,6 +20,7 @@ CAP_CSV   = os.path.join(BASE, '實收資本額.csv')
 OUT_HTML  = os.path.join(BASE, 'index.html')
 
 LARGE_CAP_THRESHOLD = 10_000_000_000  # 100億元
+PKL_PATH = os.path.join(BASE, '財報_df.pkl')
 
 START_YEAR, END_YEAR = 2021, 2026
 
@@ -229,34 +230,69 @@ def load_market(folder, market_label):
 
 
 def main():
-    print('建立交易日曆與財報錨點…')
-    trading_arr = build_trading_arr(START_YEAR, END_YEAR)
-    anchors     = get_report_anchors(START_YEAR, END_YEAR)
-    print(f'  交易日 {len(trading_arr)} 個，錨點 {len(anchors)} 個')
+    print('讀取財報_df.pkl…')
+    df = pd.read_pickle(PKL_PATH)
 
-    print('讀取 CSV…')
-    twse = load_market(TWSE_PATH, '上市(TWSE)')
-    otc  = load_market(OTC_PATH,  '上櫃(OTC)')
+    # ── 欄位對應 ────────────────────────────────────────────────
+    out = pd.DataFrame()
+    out['公司代號'] = df['代號'].astype(str).str.strip()
+    out['公司名稱'] = df['簡稱'].astype(str)
+    out['日期']    = pd.to_datetime(df['通過日'])
 
-    print('篩選財報期前後各最近一筆…')
-    twse = filter_closest_to_anchors(twse, anchors, trading_arr)
-    otc  = filter_closest_to_anchors(otc,  anchors, trading_arr)
-    print(f'  上市 {len(twse):,} 筆，上櫃 {len(otc):,} 筆')
+    out['召開法人說明會時間'] = (
+        df['法說時間'].where(df['法說時間'].notna(), None)
+        if '法說時間' in df.columns else None
+    )
 
-    print('計算距截止日交易日數…')
-    twse = attach_anchor_info(twse, anchors, trading_arr)
-    otc  = attach_anchor_info(otc,  anchors, trading_arr)
-    all_stat = pd.concat([twse, otc], ignore_index=True)
+    def map_period(row):
+        p = row['期別']
+        if p == 'Q1': return 'Q1財報'
+        if p == 'Q2': return 'Q2財報'
+        if p == 'Q3': return 'Q3財報'
+        if p == 'Q4': return 'Q4財報'
+        if p == '年報': return '年報(大型股/金融)' if row.get('大型股', False) else '年報(其餘)'
+        return '其他'
+    out['財報期別'] = df.apply(map_period, axis=1)
 
-    # 從擇要訊息抽出說明期別
-    memo_col = '法人說明會擇要訊息'
-    if memo_col in all_stat.columns:
-        all_stat['說明財報期'] = all_stat.apply(
-            lambda r: extract_period_mention(r[memo_col], r.get('日期')), axis=1)
-    else:
-        all_stat['說明財報期'] = None
+    # 財報年度 = 截止日所在年份（JS 端對 Q4/年報 顯示時會自動 -1）
+    out['財報年度'] = pd.to_datetime(df['截止日']).dt.year
+    out['財報錨點'] = pd.to_datetime(df['截止日'])
 
-    # 讀取實收資本額（判斷大型股 ≥ 100億）
+    # 網站慣例：正=截止後，負=截止前
+    # 財報_df 慣例：正=截止前（剩餘），負=截止後（逾期）→ 取反
+    out['距截止日交易日'] = (-df['距截止交易日']).astype(int)
+    out['前後'] = out['距截止日交易日'].apply(
+        lambda x: '截止日後' if x > 0 else ('截止日前' if x < 0 else '截止日當天')
+    )
+
+    out['市場'] = df['市場別'].map({'上市': '上市(TWSE)', '上櫃': '上櫃(OTC)'})
+
+    out['說明財報期'] = df.apply(
+        lambda r: f'{int(r["財報民國年"]) + 1911} {r["期別"]}', axis=1
+    )
+
+    out['法人說明會擇要訊息'] = (
+        df['法說擇要'].where(df['法說擇要'].notna(), None)
+        if '法說擇要' in df.columns else None
+    )
+
+    # 法說會日期（董事會通過後第一場）與主旨
+    out['法說日'] = (
+        pd.to_datetime(df['首次法說日'], errors='coerce')
+        if '首次法說日' in df.columns else pd.NaT
+    )
+    out['主旨'] = df['主旨'].astype(str)
+    # 董事會通過 → 首次法說會 相差日曆天數
+    diff = (out['法說日'] - out['日期']).dt.days
+    out['通過到法說天數'] = diff.where(diff.notna(), other=None)
+    # 首次法說 → 截止日 交易日數（正=截止前，負=截止後；已在 notebook 算好）
+    out['法說到截止交易日'] = (
+        df['法說到截止交易日'] if '法說到截止交易日' in df.columns else None
+    )
+
+    print(f'  載入 {len(out):,} 筆')
+
+    # ── 讀取實收資本額 ──────────────────────────────────────────
     print('讀取實收資本額.csv…')
     with open(CAP_CSV, 'rb') as f:
         cap_text = f.read().decode('utf-16')
@@ -266,7 +302,7 @@ def main():
         parts = line.split('\t')
         if len(parts) < 2:
             continue
-        code = parts[0].strip().split()[0]  # "1101 台泥" → "1101"
+        code = parts[0].strip().split()[0]
         try:
             cap = float(parts[1].strip().replace(',', ''))
             if cap >= LARGE_CAP_THRESHOLD:
@@ -275,36 +311,37 @@ def main():
             pass
     print(f'  大型股(>=100億)：{len(large_cap_codes)} 家')
 
-    # 讀取 firm_data（TSE 產業分組）
+    # ── 讀取 firm_data ──────────────────────────────────────────
     print('讀取 firm_data.csv…')
     firm_df = pd.read_csv(FIRM_CSV, encoding='utf-16', sep='\t')
     firm_df['_code']  = firm_df['證券代碼'].astype(str).str.split().str[0]
     firm_df['_short'] = firm_df['證券代碼'].astype(str).str.split(n=1).str[1].fillna('')
     firm_df['_ind']   = firm_df['TSE產業名'].fillna('未分類')
-    # firm_info: {code → {name, industry}}
     firm_info = {
         row['_code']: {'name': row['_short'], 'industry': row['_ind']}
         for _, row in firm_df.iterrows()
     }
-    # industries: {industry → [code, ...]} sorted by industry name
     from collections import defaultdict
     ind_groups = defaultdict(list)
     for code, info in sorted(firm_info.items()):
         ind_groups[info['industry']].append(code)
     industries = dict(sorted(ind_groups.items()))
 
+    # ── 產生 HTML ───────────────────────────────────────────────
     print('產生 HTML…')
-    _export_cols = ['公司代號', '日期', '召開法人說明會時間',
-                    '財報期別', '財報年度', '財報錨點', '前後', '距截止日交易日', '市場',
-                    '說明財報期', '法人說明會擇要訊息']
-    if '公司名稱' in all_stat.columns:
-        _export_cols.insert(1, '公司名稱')
-    _export_cols = [c for c in _export_cols if c in all_stat.columns]
-
-    ex = all_stat[_export_cols].copy()
+    _cols = ['公司代號', '公司名稱', '日期', '法說日', '通過到法說天數', '主旨',
+             '召開法人說明會時間', '財報期別', '財報年度', '財報錨點', '前後',
+             '距截止日交易日', '法說到截止交易日', '市場', '說明財報期', '法人說明會擇要訊息']
+    ex = out[[c for c in _cols if c in out.columns]].copy()
     ex['公司代號'] = ex['公司代號'].astype(str).str.strip()
     ex['日期']    = ex['日期'].dt.strftime('%Y-%m-%d')
-    ex['財報錨點'] = ex['財報錨點'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None)
+    ex['法說日']  = ex['法說日'].apply(
+        lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None
+    )
+    ex['財報錨點'] = ex['財報錨點'].apply(
+        lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None
+    )
+
     data_json       = json.dumps(ex.to_dict(orient='records'), ensure_ascii=False)
     firm_info_json  = json.dumps(firm_info, ensure_ascii=False)
     industries_json = json.dumps(industries, ensure_ascii=False)
@@ -320,13 +357,13 @@ def main():
 
     print(f'\n完成！共 {len(ex):,} 筆')
 
-    # 啟動本地伺服器
+    # ── 本地伺服器 ──────────────────────────────────────────────
     PORT = 8888
     os.chdir(BASE)
 
     class QuietHandler(SimpleHTTPRequestHandler):
         def log_message(self, format, *args):
-            pass  # 不印 request log
+            pass
 
     server = HTTPServer(('', PORT), QuietHandler)
     url = f'http://localhost:{PORT}/index.html'
@@ -600,7 +637,7 @@ const PERIOD_ICON = {
   'Q1財報':'🌱','Q2財報':'☀️','Q3財報':'🍂','Q4財報':'❄️',
   '年報(大型股/金融)':'🏦','年報(其餘)':'📋','月營收':'📊','其他':'📌'
 };
-const PERIOD_ORDER = ['Q1財報','Q2財報','Q3財報','Q4財報','年報(大型股/金融)','月營收','其他'];
+const PERIOD_ORDER = ['Q1財報','Q2財報','Q3財報','Q4財報','年報(大型股/金融)','年報(其餘)','月營收','其他'];
 
 // Q4財報/年報 → 財報年度為申報年-1；Q1~Q3月營收 → 申報年本身
 function fiscalLabel(period, yr) {
@@ -907,17 +944,28 @@ function selectYear(yr) {
     function tbl(arr, cls) {
       if (!arr.length) return '<div class="empty">💤 無資料</div>';
       return `<table>
-        <tr><th>日期</th><th>時間</th><th>交易日差</th><th>財報截止日</th><th>市場</th><th>說明期別</th><th>擇要訊息</th></tr>
+        <tr><th>董事會通過日</th><th>法說會日期</th><th>通過→法說</th><th>法說↔截止(交易日)</th><th>財報截止日</th><th>市場</th><th>說明期別</th><th>公告主旨</th><th>擇要訊息</th></tr>
         ${arr.map(r => {
-          const memo = r['法人說明會擇要訊息'] || '';
+          const memo   = r['法人說明會擇要訊息'] || '';
           const period = r['說明財報期'] || '';
+          const calDiff = r['通過到法說天數'];
+          const calStr = (calDiff != null && calDiff !== '' && !isNaN(calDiff))
+            ? `<span style="color:#059669;font-weight:800">+${calDiff}天</span>`
+            : '<span style="color:#cbd5e1">—</span>';
+          const tdVal = r['法說到截止交易日'];
+          const tdStr = (tdVal != null && tdVal !== '' && !isNaN(tdVal))
+            ? `<span class="${tdVal < 0 ? 'dp' : 'dn'}">${tdVal}</span>`
+            : '<span style="color:#cbd5e1">—</span>';
+          const 主旨 = r['主旨'] || '';
           return `<tr>
             <td>${r['日期'] || ''}</td>
-            <td>${r['召開法人說明會時間'] || ''}</td>
-            <td class="${cls}">${r['距截止日交易日']}</td>
+            <td style="color:#0369a1;font-weight:700">${r['法說日'] || '<span style="color:#cbd5e1">—</span>'}</td>
+            <td style="text-align:center">${calStr}</td>
+            <td style="text-align:center">${tdStr}</td>
             <td>${r['財報錨點'] || ''}</td>
             <td>${mktTag(r['市場'])}</td>
             <td>${period ? `<span class="period-tag">${period}</span>` : ''}</td>
+            <td class="memo-cell" title="${主旨.replace(/"/g,'&quot;')}">${主旨}</td>
             <td class="memo-cell">${memo}</td>
           </tr>`;
         }).join('')}
