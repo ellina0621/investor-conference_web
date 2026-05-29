@@ -8,7 +8,7 @@ import os
 import re
 import threading
 import webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import time
 import urllib3
@@ -35,6 +35,11 @@ LARGE_CAP_THRESHOLD = 10_000_000_000  # 100億元
 PKL_PATH            = os.path.join(BASE, '財報_df.pkl')
 UPCOMING_IR_CACHE   = os.path.join(BASE, 'upcoming_ir_cache.json')
 MOPS_IR_URL         = 'https://mopsov.twse.com.tw/mops/web/t100sb02_1'
+ETF981A_URL         = 'https://www.ezmoney.com.tw/ETF/Transaction/PCF?fundCode=49YTW'
+ETF981A_CSV         = os.path.join(BASE, '00981A_投組.csv')
+ETF981A_DAILY_JSON  = os.path.join(BASE, 'etf981a_daily.json')
+ETF981A_NAV_JSON    = os.path.join(BASE, 'etf981a_nav_daily.json')
+FUTURES_ODS         = os.path.join(BASE, '個股期貨代號.ods')
 
 START_YEAR, END_YEAR = 2021, 2026
 
@@ -238,7 +243,7 @@ def load_market(folder, market_label):
         dfs.append(df)
     combined = pd.concat(dfs, ignore_index=True)
     combined['日期'] = combined['召開法人說明會日期'].apply(roc_to_date)
-    combined = combined[combined['召開法人說明會時間'].astype(str).str.strip() >= '13:30']
+    combined = combined[combined['召開法人說明會時間'].astype(str).str.strip() >= '07:00']
     combined['市場'] = market_label
     return combined
 
@@ -268,7 +273,7 @@ def _ir_norm_time(value: str) -> str:
 
 
 class MopsConferenceScraper:
-    MARKET_TYPES = ['sii', 'otc', 'rotc']
+    MARKET_TYPES = ['sii', 'otc']
     FIELD_MAP = {
         'co_code':  ['公司代號', '代號', '股票代號'],
         'co_name':  ['公司名稱', '名稱'],
@@ -471,6 +476,326 @@ class MopsConferenceScraper:
         return ev
 
 
+def _mmdd_to_full(mmdd: str) -> str:
+    """'MM/DD' → 'YYYY/MM/DD'，跨年邊界（1月抓到12月）自動修正"""
+    if not mmdd or '/' not in mmdd:
+        return ''
+    mm, dd = mmdd.split('/')
+    today = datetime.today()
+    year = today.year
+    if today.month == 1 and mm == '12':
+        year -= 1
+    return f'{year}/{mm}/{dd}'
+
+
+def save_etf981a_daily(holdings: dict, data_date: str, json_path: str = ETF981A_DAILY_JSON,
+                       is_full_date: bool = False):
+    """將本次爬取的成分股寫入 etf981a_daily.json。
+    key 以頁面「上傳時間」的日期為準（YYYY/MM/DD）。
+    同一上傳日期重跑 → 覆蓋；新日期 → 新增。
+    is_full_date=True 表示 data_date 已是 YYYY/MM/DD，不需再轉換。
+    """
+    if not holdings or not data_date:
+        return
+    full_date = data_date if is_full_date else _mmdd_to_full(data_date)
+    if not full_date:
+        return
+    try:
+        daily = {}
+        if os.path.isfile(json_path):
+            with open(json_path, encoding='utf-8') as f:
+                daily = json.load(f)
+        daily[full_date] = holdings          # 覆蓋或新增
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(daily, f, ensure_ascii=False, indent=2)
+        print(f'  [00981A] 已存 {full_date}（{len(holdings)} 檔）→ etf981a_daily.json')
+    except Exception as e:
+        print(f'  [警告] 儲存 etf981a_daily.json 失敗：{e}')
+
+
+_NAV_SEED = {
+    '2026/05/27': {'total_nav_raw': 290_447_804_921.0, 'nav_per_unit_raw': 31.89}
+}
+
+def save_etf981a_nav(metrics: dict, date_full: str,
+                     json_path: str = ETF981A_NAV_JSON):
+    """每日爬取後，將 NAV 原始數值存入 etf981a_nav_daily.json。
+    同一上傳日期重跑 → 覆蓋；新日期 → 新增。
+    """
+    raw_nav   = metrics.get('total_nav_raw')
+    raw_unit  = metrics.get('nav_per_unit_raw')
+    if not date_full or (raw_nav is None and raw_unit is None):
+        return
+    try:
+        if os.path.isfile(json_path):
+            with open(json_path, encoding='utf-8') as f:
+                daily = json.load(f)
+        else:
+            daily = dict(_NAV_SEED)   # 用種子初始化
+        entry = {}
+        if raw_nav  is not None: entry['total_nav_raw']   = raw_nav
+        if raw_unit is not None: entry['nav_per_unit_raw'] = raw_unit
+        daily[date_full] = entry
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(daily, f, ensure_ascii=False, indent=2)
+        print(f'  [NAV] 已存 {date_full}：淨資產={raw_nav} 淨值={raw_unit}')
+    except Exception as e:
+        print(f'  [警告] 儲存 etf981a_nav_daily.json 失敗：{e}')
+
+
+def load_etf981a_nav_delta(date_full: str,
+                           json_path: str = ETF981A_NAV_JSON) -> dict:
+    """讀取前一日 NAV，計算百分比差異。
+    回傳 {'total_nav_pct': '+1.2%', 'nav_unit_pct': '-0.5%'}（可能為空值）
+    """
+    if not os.path.isfile(json_path):
+        return {}
+    try:
+        with open(json_path, encoding='utf-8') as f:
+            daily = json.load(f)
+        if not daily:
+            return {}
+        dates = sorted(daily.keys(), reverse=True)
+        prev_date = next((d for d in dates if d != date_full), None)
+        if not prev_date or date_full not in daily:
+            return {}
+        curr = daily[date_full]
+        prev = daily[prev_date]
+        result = {}
+        for key, label in [('total_nav_raw','total_nav_pct'), ('nav_per_unit_raw','nav_unit_pct')]:
+            c, p = curr.get(key), prev.get(key)
+            if c is not None and p and p != 0:
+                pct = (c - p) / abs(p) * 100
+                sign = '+' if pct >= 0 else ''
+                result[label] = f'{sign}{pct:.2f}%'
+        return result
+    except Exception as e:
+        print(f'  [警告] 讀取 etf981a_nav_daily.json 失敗：{e}')
+        return {}
+
+
+def load_futures_codes(ods_path: str = FUTURES_ODS) -> list:
+    """讀取個股期貨代號 ODS，回傳股票代號 list（4位數字串）"""
+    if not os.path.isfile(ods_path):
+        print(f'  [警告] 找不到 {ods_path}')
+        return []
+    try:
+        df = pd.read_excel(ods_path, engine='odf', header=1)
+        codes = (df.iloc[:, 2].dropna().astype(str).str.strip().tolist())
+        codes = [c for c in codes if c.isdigit() and 4 <= len(c) <= 5]
+        print(f'  個股期貨：{len(codes)} 檔')
+        return codes
+    except Exception as e:
+        print(f'  [警告] 讀取個股期貨代號.ods失敗：{e}')
+        return []
+
+
+def load_etf981a_prev(csv_path: str, current_mmdd: str = '', json_path: str = ETF981A_DAILY_JSON):
+    """讀取前一個交易日的00981A成分股。優先查 etf981a_daily.json，其次 CSV。
+    回傳 (prev_holdings, prev_date_str, names_dict)
+    """
+    # ── 先從 CSV 建名稱字典 ──────────────────────────────────
+    names_dict: dict = {}
+    if os.path.isfile(csv_path):
+        try:
+            _df = pd.read_csv(csv_path, encoding='utf-8-sig')
+            names_dict = {
+                str(r['股票代號']).strip(): str(r['股票名稱']).strip()
+                for _, r in _df.iterrows()
+                if str(r.get('股票代號', '')).strip()
+            }
+        except Exception:
+            pass
+
+    current_full = _mmdd_to_full(current_mmdd) if current_mmdd else ''
+
+    # ── 優先：etf981a_daily.json ────────────────────────────
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, encoding='utf-8') as f:
+                daily = json.load(f)
+            if daily:
+                dates = sorted(daily.keys(), reverse=True)
+                for d in dates:
+                    if d != current_full:
+                        prev_mmdd = '/'.join(d.split('/')[1:])  # YYYY/MM/DD → MM/DD
+                        return daily[d], prev_mmdd, names_dict
+        except Exception as e:
+            print(f'  [警告] 讀取 etf981a_daily.json 失敗：{e}')
+
+    # ── 備用：CSV ────────────────────────────────────────────
+    if not os.path.isfile(csv_path):
+        return {}, '', names_dict
+    try:
+        df = pd.read_csv(csv_path, encoding='utf-8-sig')
+        if df.empty:
+            return {}, '', names_dict
+        df['日期'] = pd.to_datetime(df['日期'], format='%Y/%m/%d')
+        dates = sorted(df['日期'].unique(), reverse=True)
+        prev_date = None
+        for d in dates:
+            if d.strftime('%m/%d') != current_mmdd:
+                prev_date = d
+                break
+        if prev_date is None and len(dates) >= 2:
+            prev_date = dates[1]
+        if prev_date is None:
+            return {}, '', names_dict
+        prev_df = df[df['日期'] == prev_date]
+        prev_holdings = {
+            str(r['股票代號']).strip(): str(r['持股權重']).strip()
+            for _, r in prev_df.iterrows()
+        }
+        return prev_holdings, prev_date.strftime('%m/%d'), names_dict
+    except Exception as e:
+        print(f'  [警告] 讀取00981A_投組.csv失敗：{e}')
+        return {}, '', names_dict
+
+
+def scrape_00981a_holdings():
+    """爬取00981A最新成分股與申贖摘要。
+    回傳 (holdings, data_date, metrics)
+      holdings  : {股票代號: '持股權重字串'}，例如 {'7757': '9.80%'}
+      data_date : 頁面上傳時間 'MM/DD'，取不到時用查詢日期
+      metrics   : {diff_groups, nav_per_unit, total_nav} 格式化後的顯示字串
+    """
+    opts = Options()
+    opts.add_argument('--headless=new')
+    opts.add_argument('--window-size=1920,1080')
+    opts.add_argument('--disable-blink-features=AutomationControlled')
+    opts.add_experimental_option('excludeSwitches', ['enable-automation'])
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+    wait   = WebDriverWait(driver, 15)
+    holdings: dict = {}
+    data_date = ''
+    metrics: dict = {}
+    try:
+        driver.get(ETF981A_URL)
+        time.sleep(4)
+        today = datetime.today()
+        for delta in range(0, 7):
+            target = today - timedelta(days=delta)
+            if target.weekday() >= 5:      # 跳週末
+                continue
+            roc_str = f'{target.year - 1911}/{target.month:02d}/{target.day:02d}'
+            # 輸入民國日期
+            try:
+                inp = wait.until(EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "input[type='text']")))
+                driver.execute_script("arguments[0].value = '';", inp)
+                inp.clear()
+                inp.send_keys(roc_str)
+                time.sleep(0.3)
+            except Exception as e:
+                print(f'  [00981A] 輸入日期失敗：{e}')
+                continue
+            # 點查詢
+            queried = False
+            for by, sel in [
+                (By.XPATH, "//button[normalize-space()='查詢']"),
+                (By.XPATH, "//input[@value='查詢']"),
+                (By.CSS_SELECTOR, 'button.btn-primary'),
+            ]:
+                try:
+                    btn = wait.until(EC.element_to_be_clickable((by, sel)))
+                    btn.click()
+                    queried = True
+                    break
+                except Exception:
+                    continue
+            if not queried:
+                continue
+            time.sleep(3)
+            # 無資料 alert
+            try:
+                driver.switch_to.alert.accept()
+                continue
+            except Exception:
+                pass
+            # 讀取「上傳時間」（格式：115/05/28 → 民國年/月/日）
+            try:
+                body_text = driver.find_element(By.TAG_NAME, 'body').text
+                m = re.search(r'上傳時間[：:]\s*(\d{2,3})/(\d{2})/(\d{2})', body_text)
+                if m:
+                    ce_year = int(m.group(1)) + 1911
+                    data_date = f'{m.group(2)}/{m.group(3)}'        # MM/DD，用於顯示
+                    metrics['_date_full'] = f'{ce_year}/{m.group(2)}/{m.group(3)}'  # YYYY/MM/DD，用於 JSON key
+            except Exception:
+                pass
+            # 找股票表格
+            tbl = None
+            for t in driver.find_elements(By.TAG_NAME, 'table'):
+                hdrs = [th.text.strip() for th in t.find_elements(By.TAG_NAME, 'th')]
+                if '股票代號' in hdrs and '股票名稱' in hdrs:
+                    tbl = t
+                    break
+            if tbl is None:
+                continue
+            for row in tbl.find_elements(By.TAG_NAME, 'tr')[1:]:
+                cells = [td.text.strip() for td in row.find_elements(By.TAG_NAME, 'td')]
+                if len(cells) >= 4 and cells[0]:
+                    holdings[cells[0]] = cells[3]
+            if holdings:
+                if not data_date:
+                    data_date = f'{target.month:02d}/{target.day:02d}'
+                # 抓摘要指標（跳過股票明細表）
+                raw_m: dict = {}
+                try:
+                    for t2 in driver.find_elements(By.TAG_NAME, 'table'):
+                        hdrs2 = [th.text.strip() for th in t2.find_elements(By.TAG_NAME, 'th')]
+                        if any(h in ('股票代號', '股票名稱') for h in hdrs2):
+                            continue
+                        for row2 in t2.find_elements(By.TAG_NAME, 'tr'):
+                            cells2 = [c.text.strip() for c in row2.find_elements(By.TAG_NAME, 'td')]
+                            if len(cells2) >= 2 and cells2[0]:
+                                # 去掉日期前綴（如 "115/05/28 每受益..."）
+                                key2 = re.sub(r'^\d{2,3}/\d{2}/\d{2}\s*', '', cells2[0]).strip()
+                                raw_m[key2] = cells2[1].strip()
+                except Exception:
+                    pass
+                # 解析 basket 單位數
+                basket = 500_000
+                for k, v in raw_m.items():
+                    if '每現金申購' in k and '基數之受益權單位數' in k:
+                        try: basket = int(v.replace(',', ''))
+                        except: pass
+                # 差異組數
+                for k, v in raw_m.items():
+                    if '與前日已發行單位差異數' in k:
+                        try:
+                            diff = int(v.replace(',', ''))
+                            g = diff // basket
+                            metrics['diff_groups'] = f'{"+" if g >= 0 else ""}{g:,}'
+                            metrics['diff_sign']   = 'pos' if g >= 0 else 'neg'
+                        except: pass
+                        break
+                # 淨值
+                for k, v in raw_m.items():
+                    if '每受益權單位淨資產價值' in k:
+                        cleaned = v.replace('NTD', '').replace('NT$', '').strip()
+                        metrics['nav_per_unit'] = cleaned
+                        try: metrics['nav_per_unit_raw'] = float(cleaned.replace(',', ''))
+                        except: pass
+                        break
+                # 基金總淨資產（億）
+                for k, v in raw_m.items():
+                    if '基金淨資產' in k or '基金資產淨值' in k or '基金總淨值' in k:
+                        try:
+                            nav_raw = float(v.replace('NTD', '').replace('NT$', '').replace(',', '').strip())
+                            yi = nav_raw / 1e8
+                            metrics['total_nav'] = f'{yi:,.0f}億'
+                            metrics['total_nav_raw'] = nav_raw
+                        except: pass
+                        break
+                print(f'  [00981A] 取得 {len(holdings)} 筆成分股，截至 {data_date}，metrics={list(metrics.keys())}')
+                break
+    except Exception as e:
+        print(f'  [00981A] 爬取失敗：{e}')
+    finally:
+        driver.quit()
+    return holdings, data_date, metrics
+
+
 def scrape_upcoming_ir():
     """爬取近期法說會，更新快取，回傳 (全部未來事件, 新event keys集合)"""
     today_str = date.today().strftime('%Y/%m/%d')
@@ -648,6 +973,38 @@ def main():
     pending_base = ex[_no_ir].sort_values('日期', ascending=False).copy()
     print(f'  待法說（未過濾）：{len(pending_base):,} 筆（財報期限：{sorted(_valid_periods)}）')
 
+    # 個股期貨清單
+    print('讀取個股期貨代號…')
+    futures_codes = load_futures_codes()
+
+    # 爬取 00981A 成分股
+    print('爬取 00981A 成分股…')
+    etf981a_holdings: dict = {}
+    etf981a_date = ''
+    etf981a_metrics: dict = {}
+    try:
+        etf981a_holdings, etf981a_date, etf981a_metrics = scrape_00981a_holdings()
+        if etf981a_holdings:
+            _full = etf981a_metrics.pop('_date_full', '') or _mmdd_to_full(etf981a_date)
+            save_etf981a_daily(etf981a_holdings, _full, is_full_date=True)
+            save_etf981a_nav(etf981a_metrics, _full)
+    except Exception as _e:
+        print(f'  [警告] 00981A 爬取失敗：{_e}')
+    etf981a_nav_delta: dict = {}
+    try:
+        _full_check = _mmdd_to_full(etf981a_date) if etf981a_date else ''
+        etf981a_nav_delta = load_etf981a_nav_delta(_full_check)
+    except Exception as _e:
+        print(f'  [警告] 計算NAV差異失敗：{_e}')
+    etf981a_prev: dict = {}
+    etf981a_prev_date = ''
+    etf981a_names: dict = {}
+    try:
+        etf981a_prev, etf981a_prev_date, etf981a_names = load_etf981a_prev(ETF981A_CSV, etf981a_date)
+        print(f'  00981A 前日基準：{etf981a_prev_date}（{len(etf981a_prev)} 檔）')
+    except Exception as _e:
+        print(f'  [警告] 讀取00981A前日資料失敗：{_e}')
+
     # 爬取近期法說會
     print('爬取近期法說會（MOPS）…')
     upcoming_all = []
@@ -701,7 +1058,15 @@ def main():
             .replace('__INDUSTRIES__', industries_json)
             .replace('__LARGE_CAP__', large_cap_json)
             .replace('__PENDING_IR__', pending_ir_json)
-            .replace('__UPCOMING_IR__', upcoming_ir_json))
+            .replace('__UPCOMING_IR__', upcoming_ir_json)
+            .replace('__ETF981A__', json.dumps(etf981a_holdings, ensure_ascii=False))
+            .replace('__ETF981A_DATE__', etf981a_date)
+            .replace('__ETF981A_METRICS__', json.dumps(etf981a_metrics, ensure_ascii=False))
+            .replace('__ETF981A_PREV__', json.dumps(etf981a_prev, ensure_ascii=False))
+            .replace('__ETF981A_PREV_DATE__', etf981a_prev_date)
+            .replace('__ETF981A_NAMES__', json.dumps(etf981a_names, ensure_ascii=False))
+            .replace('__FUTURES__', json.dumps(futures_codes, ensure_ascii=False))
+            .replace('__ETF981A_NAV_DELTA__', json.dumps(etf981a_nav_delta, ensure_ascii=False)))
     with open(OUT_HTML, 'w', encoding='utf-8') as f:
         f.write(html)
 
@@ -813,6 +1178,57 @@ body.sb-off #main{padding-left:58px;}
 #home-title{font-size:26px;font-weight:900;color:#1e3a5f;margin-bottom:6px;}
 #home-sub{font-size:14px;color:#6b8fc7;font-weight:700;margin-bottom:24px;}
 
+/* 00981A info card */
+#etf981a-card{
+  display:none;margin-bottom:24px;
+  background:linear-gradient(135deg,#0d2137 0%,#1e3a5f 100%);
+  border-radius:16px;padding:16px 22px;
+  box-shadow:0 4px 18px rgba(0,0,0,.15);
+  font-family:'Nunito',sans-serif;
+}
+#etf981a-card.visible{display:block;}
+#etf981a-card-head{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:14px;
+}
+#etf981a-card-head .title{font-size:14px;font-weight:900;color:#B0E2FF;letter-spacing:.3px;}
+#etf981a-card-head .date-tag{font-size:11px;color:#93c5fd;font-weight:700;
+  background:rgba(255,255,255,.08);padding:3px 10px;border-radius:8px;}
+#etf981a-metrics{display:flex;gap:12px;}
+.etf-metric{
+  flex:1;background:rgba(255,255,255,.07);border-radius:12px;
+  padding:10px 14px;text-align:center;border:1px solid rgba(255,255,255,.1);
+}
+.etf-metric .label{font-size:10px;color:#93c5fd;font-weight:700;margin-bottom:6px;letter-spacing:.3px;}
+.etf-metric .value{font-size:20px;font-weight:900;line-height:1;}
+.etf-metric .unit{font-size:10px;color:#93c5fd;font-weight:700;margin-top:3px;}
+.etf-metric .value.pos{color:#f87171;}
+.etf-metric .value.neg{color:#4ade80;}
+.etf-metric .value.neutral{color:#B0E2FF;}
+.etf-metric .delta{font-size:10px;font-weight:800;margin-top:2px;line-height:1;}
+.etf-metric .delta.up{color:#f87171;}
+.etf-metric .delta.dn{color:#4ade80;}
+#etf981a-toggle{margin-top:12px;text-align:center;cursor:pointer;
+  font-size:11px;color:#93c5fd;font-weight:700;letter-spacing:.3px;
+  padding:6px;border-radius:8px;border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.04);transition:background .15s;user-select:none;}
+#etf981a-toggle:hover{background:rgba(255,255,255,.09);}
+#etf981a-toggle .arrow{display:inline-block;transition:transform .2s;margin-left:4px;}
+#etf981a-toggle.open .arrow{transform:rotate(180deg);}
+#etf981a-diff{display:none;margin-top:12px;border-top:1px solid rgba(255,255,255,.1);padding-top:12px;}
+#etf981a-diff-title{font-size:11px;color:#93c5fd;font-weight:700;margin-bottom:8px;}
+#etf981a-diff table{width:100%;border-collapse:collapse;font-size:12px;}
+#etf981a-diff th{text-align:left;padding:5px 10px;color:#93c5fd;font-size:10px;font-weight:700;
+  border-bottom:1px solid rgba(255,255,255,.12);white-space:nowrap;}
+#etf981a-diff td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.06);
+  vertical-align:middle;white-space:nowrap;}
+#etf981a-diff tr:last-child td{border-bottom:none;}
+#etf981a-diff .diff-type{font-weight:900;font-size:14px;text-align:center;}
+#etf981a-diff .diff-code{font-weight:900;}
+#etf981a-diff .diff-name{opacity:.8;}
+#etf981a-diff .diff-w{font-weight:700;font-family:monospace;font-size:11px;}
+#etf981a-diff .diff-arrow{color:#94a3b8;font-size:10px;}
+
 /* deadline timeline */
 #dl-section{margin-bottom:32px;}
 #dl-title{font-size:14px;font-weight:800;color:#1e3a5f;margin-bottom:12px;display:flex;align-items:center;gap:6px;}
@@ -895,7 +1311,7 @@ body.sb-off #main{padding-left:58px;}
 .period-tag{background:#223A5E;color:#fff;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:800;white-space:nowrap;}
 .memo-cell{font-size:11px;color:#64748b;max-width:260px;word-break:break-word;}
 
-/* ── PENDING IR PANEL ── */
+/* ── Floating shortcut buttons ── */
 #pending-btn{
   position:fixed;top:14px;right:20px;z-index:999;
   padding:8px 16px;border-radius:12px;
@@ -907,31 +1323,75 @@ body.sb-off #main{padding-left:58px;}
 }
 #pending-btn:hover{background:#2d5a8a;color:#bfdbfe;}
 #pending-cnt{background:#ef4444;color:#fff;border-radius:8px;padding:1px 8px;font-size:11px;font-weight:900;}
-#pending-overlay{display:none;position:fixed;inset:0;z-index:990;background:rgba(0,20,50,.45);}
-#pending-overlay.open{display:block;}
-#pending-panel{
-  display:none;position:fixed;top:0;right:0;bottom:0;
-  width:calc(100% - 280px);background:#f0f6ff;
-  z-index:991;flex-direction:column;overflow:hidden;
-  box-shadow:-6px 0 30px rgba(0,0,0,.2);
+#upcoming-btn{
+  position:fixed;top:14px;right:200px;z-index:999;
+  padding:8px 16px;border-radius:12px;
+  background:#2A5470;border:none;color:#B0E2FF;
+  font-size:13px;font-weight:800;cursor:pointer;
+  display:flex;align-items:center;gap:8px;
+  box-shadow:0 2px 10px rgba(0,0,0,.3);
+  font-family:'Nunito',sans-serif;transition:.2s;
 }
-body.sb-off #pending-panel{width:100%;}
-#pending-panel.open{display:flex;}
-#pending-head{
-  padding:14px 28px;background:#0d2137;flex-shrink:0;
-  display:flex;align-items:center;justify-content:space-between;
+#upcoming-btn:hover{background:#1e3a5f;color:#bfdbfe;}
+#upcoming-cnt{background:#16a34a;color:#fff;border-radius:8px;padding:1px 8px;font-size:11px;font-weight:900;}
+
+/* ── IR Board pages ── */
+.ir-board{
+  display:none;position:fixed;inset:0;z-index:900;
+  flex-direction:column;overflow:hidden;
+  font-family:'Nunito',sans-serif;
 }
-#pending-head h2{color:#60a5fa;font-size:17px;font-weight:900;margin:0;}
-#pending-close{
-  background:none;border:2px solid #1e3a5f;color:#93c5fd;
-  border-radius:10px;padding:6px 16px;cursor:pointer;
-  font-size:13px;font-weight:800;font-family:'Nunito',sans-serif;transition:.2s;
+.ir-board.visible{display:flex;}
+.ir-board-head{
+  flex-shrink:0;
+  padding:12px 24px;display:flex;align-items:center;gap:12px;
 }
-#pending-close:hover{background:#1e3a5f;color:#fff;}
-#pending-body{flex:1;overflow-y:auto;padding:20px 28px;}
-#pending-body::-webkit-scrollbar{width:5px;}
-#pending-body::-webkit-scrollbar-thumb{background:#bfdbfe;border-radius:5px;}
-#p-meta{font-size:13px;color:#6b8fc7;font-weight:700;margin-bottom:14px;}
+.ir-board-back{
+  background:rgba(255,255,255,.15);border:none;cursor:pointer;
+  font-size:13px;font-weight:800;padding:6px 14px;border-radius:10px;
+  font-family:'Nunito',sans-serif;white-space:nowrap;transition:.15s;
+}
+.ir-board-back:hover{background:rgba(255,255,255,.28);}
+.ir-board-title{font-size:15px;font-weight:900;flex:1;text-align:center;}
+.ir-board-spacer{width:72px;}
+.ir-board-search{flex-shrink:0;padding:10px 24px 8px;}
+.ir-board-search input{
+  width:100%;padding:9px 16px;border-radius:12px;
+  background:rgba(255,255,255,.12);border:2px solid rgba(255,255,255,.2);
+  color:#f1f5f9;font-size:14px;font-family:'Nunito',sans-serif;outline:none;box-sizing:border-box;
+}
+.ir-board-search input::placeholder{color:rgba(255,255,255,.45);}
+.ir-board-search input:focus{border-color:rgba(255,255,255,.4);}
+.ir-board-scroll{flex:1;overflow-y:auto;}
+.ir-board-scroll::-webkit-scrollbar{width:5px;}
+.ir-board-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:5px;}
+.ir-board-body{padding:8px 24px 36px;}
+.ir-board-body table{width:100%;border-collapse:collapse;}
+#upcoming-board{background:linear-gradient(180deg,#1d3f5c 0%,#16304a 100%);}
+#upcoming-board .ir-board-head{background:#2A5470;}
+#upcoming-board .ir-board-back{color:#B0E2FF;}
+#upcoming-board .ir-board-title{color:#B0E2FF;}
+#upcoming-board #u-meta{color:#93c5fd;}
+#pending-board{background:linear-gradient(180deg,#0d2137 0%,#122840 100%);}
+#pending-board .ir-board-head{background:#0d2137;}
+#pending-board .ir-board-back{color:#60a5fa;}
+#pending-board .ir-board-title{color:#60a5fa;}
+#pending-board #p-meta{color:#93c5fd;}
+
+/* Search bar in sections */
+.panel-search-bar{padding:10px 28px 0;}
+.panel-search-bar input{
+  width:100%;padding:8px 14px;border:2px solid #93c5fd;border-radius:12px;
+  background:#fff;color:#1e3a5f;font-size:14px;font-family:'Nunito',sans-serif;outline:none;
+  transition:.2s;box-sizing:border-box;
+}
+.panel-search-bar input:focus{border-color:#2A5470;}
+.panel-search-bar input::placeholder{color:#93c5fd;}
+
+/* Tables */
+#p-meta,#u-meta{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;}
+#u-meta{color:#2A5470;}
+#p-meta{color:#6b8fc7;}
 #ptable{width:100%;border-collapse:collapse;font-size:13px;background:#fff;
   border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(59,130,246,.1);}
 #ptable th{
@@ -945,61 +1405,6 @@ body.sb-off #pending-panel{width:100%;}
 #ptable td{padding:8px 12px;color:#1e3a5f;border-bottom:1px solid #f0f6ff;}
 #ptable tr:last-child td{border-bottom:none;}
 #ptable tr:hover td{background:#f8fbff;}
-
-/* Panel search bar */
-.panel-search-bar{padding:10px 28px 0;flex-shrink:0;}
-.panel-search-bar input{
-  width:100%;padding:8px 14px;border:2px solid #1e3a5f;border-radius:12px;
-  background:#112233;color:#bfdbfe;font-size:14px;font-family:'Nunito',sans-serif;outline:none;
-  transition:.2s;
-}
-.panel-search-bar input:focus{border-color:#3b82f6;}
-.panel-search-bar input::placeholder{color:#2d5a8a;}
-#upcoming-panel .panel-search-bar input{
-  background:#fff;color:#1e3a5f;border-color:#93c5fd;
-}
-#upcoming-panel .panel-search-bar input:focus{border-color:#2A5470;}
-#upcoming-panel .panel-search-bar input::placeholder{color:#93c5fd;}
-
-/* Upcoming IR panel */
-#upcoming-btn{
-  position:fixed;top:14px;right:200px;z-index:999;
-  padding:8px 16px;border-radius:12px;
-  background:#14532d;border:none;color:#4ade80;
-  font-size:13px;font-weight:800;cursor:pointer;
-  display:flex;align-items:center;gap:8px;
-  box-shadow:0 2px 10px rgba(0,0,0,.3);
-  font-family:'Nunito',sans-serif;transition:.2s;
-}
-#upcoming-btn:hover{background:#166534;color:#bbf7d0;}
-#upcoming-cnt{background:#16a34a;color:#fff;border-radius:8px;padding:1px 8px;font-size:11px;font-weight:900;}
-#upcoming-overlay{display:none;position:fixed;inset:0;z-index:990;background:rgba(0,20,50,.45);}
-#upcoming-overlay.open{display:block;}
-#upcoming-panel{
-  display:none;position:fixed;top:0;right:0;bottom:0;
-  width:calc(100% - 280px);background:#eef4ff;
-  z-index:991;flex-direction:column;overflow:hidden;
-  box-shadow:-6px 0 30px rgba(0,0,0,.2);
-}
-body.sb-off #upcoming-panel{width:100%;}
-#upcoming-panel.open{display:flex;}
-#upcoming-head{
-  padding:14px 28px;background:#2A5470;flex-shrink:0;
-  display:flex;align-items:center;justify-content:space-between;
-}
-#upcoming-head h2{color:#B0E2FF;font-size:17px;font-weight:900;margin:0;flex:1;text-align:center;}
-#upcoming-close{
-  display:inline-flex;align-items:center;gap:6px;
-  padding:7px 18px;border-radius:12px;
-  border:2px solid #B0E2FF;background:rgba(255,255,255,.08);
-  color:#B0E2FF;font-size:13px;font-weight:800;
-  cursor:pointer;font-family:'Nunito',sans-serif;transition:.2s;
-}
-#upcoming-close:hover{background:rgba(176,226,255,.2);color:#fff;border-color:#fff;}
-#upcoming-body{flex:1;overflow-y:auto;padding:20px 28px;}
-#upcoming-body::-webkit-scrollbar{width:5px;}
-#upcoming-body::-webkit-scrollbar-thumb{background:#93c5fd;border-radius:5px;}
-#u-meta{font-size:13px;color:#2A5470;font-weight:700;margin-bottom:14px;}
 #utable{width:100%;border-collapse:collapse;font-size:13px;background:#fff;
   border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(42,84,112,.12);}
 #utable th{
@@ -1019,6 +1424,18 @@ body.sb-off #upcoming-panel{width:100%;}
   padding:1px 6px;border-radius:6px;margin-left:5px;
   vertical-align:middle;line-height:1.5;
 }
+
+.etf981a-code{font-weight:900;}
+.etf981a-weight{display:block;font-size:10px;color:#f97316;font-weight:700;margin-top:1px;line-height:1.3;}
+#p-meta,#u-meta{display:flex;justify-content:space-between;align-items:center;}
+.etf981a-label{font-size:11px;color:#f97316;font-weight:700;}
+.etf981a-bar{display:none;flex-wrap:wrap;align-items:center;gap:6px;
+  margin-bottom:12px;padding:8px 12px;border-radius:10px;
+  background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.2);}
+.etf981a-bar-lbl{font-size:11px;font-weight:800;color:#fb923c;white-space:nowrap;margin-right:2px;}
+.etf981a-chip{font-size:12px;font-weight:900;color:#f97316;
+  background:rgba(249,115,22,.15);border:1px solid rgba(249,115,22,.35);
+  padding:2px 9px;border-radius:6px;white-space:nowrap;cursor:default;}
 
 /* Year buttons */
 #ybtns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;}
@@ -1062,63 +1479,8 @@ tr:hover td{background:#f8fbff;}
 </head>
 <body>
 <button id="sb-toggle" onclick="toggleSb()" title="展開/收合側欄">☰</button>
-<button id="upcoming-btn" onclick="openUpcoming()">📅 即將法說 <span id="upcoming-cnt">0</span></button>
-<button id="pending-btn" onclick="openPending()">📋 待法說 <span id="pending-cnt">0</span></button>
-<div id="upcoming-overlay" onclick="closeUpcoming()"></div>
-<div id="upcoming-panel">
-  <div id="upcoming-head">
-    <button id="upcoming-close" onclick="closeUpcoming()">← 返回</button>
-    <h2>📅 董事會已通過、即將舉行法說會</h2>
-    <div style="width:90px"></div>
-  </div>
-  <div class="panel-search-bar">
-    <input id="upcoming-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderUpcoming()">
-  </div>
-  <div id="upcoming-body">
-    <div id="u-meta"></div>
-    <table id="utable">
-      <thead><tr>
-        <th data-col="公司代號" onclick="sortU('公司代號')">代號</th>
-        <th data-col="公司名稱" onclick="sortU('公司名稱')">名稱</th>
-        <th data-col="市場" onclick="sortU('市場')">市場</th>
-        <th data-col="說明財報期" onclick="sortU('說明財報期')">財報期</th>
-        <th data-col="日期" onclick="sortU('日期')">通過日</th>
-        <th data-col="財報錨點" onclick="sortU('財報錨點')">截止日</th>
-        <th data-col="即將法說日" onclick="sortU('即將法說日')">即將法說日</th>
-        <th data-col="即將法說時間" onclick="sortU('即將法說時間')">時間</th>
-        <th>地點</th>
-        <th>公告主旨</th>
-      </tr></thead>
-      <tbody id="utbody"></tbody>
-    </table>
-  </div>
-</div>
-<div id="pending-overlay" onclick="closePending()"></div>
-<div id="pending-panel">
-  <div id="pending-head">
-    <h2>📋 董事會已通過、尚未舉行法說會</h2>
-    <button id="pending-close" onclick="closePending()">✕ 關閉</button>
-  </div>
-  <div class="panel-search-bar">
-    <input id="pending-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderPending()">
-  </div>
-  <div id="pending-body">
-    <div id="p-meta"></div>
-    <table id="ptable">
-      <thead><tr>
-        <th data-col="公司代號" onclick="sortP('公司代號')">代號</th>
-        <th data-col="公司名稱" onclick="sortP('公司名稱')">名稱</th>
-        <th data-col="市場" onclick="sortP('市場')">市場</th>
-        <th data-col="說明財報期" onclick="sortP('說明財報期')">財報期</th>
-        <th data-col="日期" onclick="sortP('日期')">通過日</th>
-        <th data-col="財報錨點" onclick="sortP('財報錨點')">截止日</th>
-        <th data-col="距截止日交易日" onclick="sortP('距截止日交易日')">距截止(交易日)</th>
-        <th>公告主旨</th>
-      </tr></thead>
-      <tbody id="ptbody"></tbody>
-    </table>
-  </div>
-</div>
+<button id="upcoming-btn" onclick="openIRBoard('upcoming')">📅 即將法說 <span id="upcoming-cnt">0</span></button>
+<button id="pending-btn" onclick="openIRBoard('pending')">📋 待法說 <span id="pending-cnt">0</span></button>
 <div id="sb">
   <div id="sb-top">
     <div id="sb-logo">📊 法說會查詢<span>財報期對應一覽</span></div>
@@ -1135,12 +1497,111 @@ tr:hover td{background:#f8fbff;}
       <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#223A5E;"></span>
       <span style="font-size:12px;color:#1e3a5f;font-weight:700;">深藍色 = 實收資本額 ≥ 100億（大型股）</span>
     </div>
+    <div id="etf981a-card">
+      <div id="etf981a-card-head">
+        <span class="title">📈 00981A 統一台股增長主動式ETF基金</span>
+        <span class="date-tag" id="etf981a-date-tag"></span>
+      </div>
+      <div id="etf981a-metrics">
+        <div class="etf-metric">
+          <div class="label">🔄 差異組數</div>
+          <div class="value" id="etf-diff">—</div>
+          <div class="unit">組</div>
+        </div>
+        <div class="etf-metric">
+          <div class="label">💰 基金淨資產</div>
+          <div class="value neutral" id="etf-nav-total">—</div>
+          <div class="delta" id="etf-nav-total-delta"></div>
+          <div class="unit">元</div>
+        </div>
+        <div class="etf-metric">
+          <div class="label">📊 淨值</div>
+          <div class="value neutral" id="etf-nav-unit">—</div>
+          <div class="delta" id="etf-nav-unit-delta"></div>
+          <div class="unit">NT$/unit</div>
+        </div>
+      </div>
+      <div id="etf981a-toggle" onclick="toggleEtfDiff()" style="display:none">
+        📋 成分股差異 <span id="etf981a-diff-cnt"></span><span class="arrow">▾</span>
+      </div>
+      <div id="etf981a-diff">
+        <div id="etf981a-diff-title">與前日成分股差異 <span id="etf981a-prev-date-label" style="opacity:.65"></span></div>
+        <table><thead><tr>
+          <th style="text-align:center">變動</th>
+          <th>代號</th><th>名稱</th><th>前日權重</th><th style="text-align:center">差異</th><th>今日權重</th>
+        </tr></thead><tbody id="etf981a-diff-body"></tbody></table>
+      </div>
+    </div>
     <div id="dl-section">
       <div id="dl-title">📅 台股財報截止日</div>
       <div id="dl-row"></div>
     </div>
     <div id="ind-grid"></div>
+
   </div>
+
+  <div id="upcoming-board" class="ir-board">
+    <div class="ir-board-head">
+      <button class="ir-board-back" onclick="closeIRBoard()">← 返回</button>
+      <span class="ir-board-title">📅 即將舉行法說會</span>
+      <div class="ir-board-spacer"></div>
+    </div>
+    <div class="ir-board-search">
+      <input id="upcoming-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderUpcoming()">
+    </div>
+    <div class="ir-board-scroll">
+      <div class="ir-board-body">
+        <div id="u-meta" style="font-size:12px;font-weight:700;margin-bottom:10px;"></div>
+        <div id="u-981a-bar" class="etf981a-bar"></div>
+        <table id="utable">
+          <thead><tr>
+            <th data-col="公司代號" onclick="sortU('公司代號')">代號</th>
+            <th data-col="公司名稱" onclick="sortU('公司名稱')">名稱</th>
+            <th data-col="市場" onclick="sortU('市場')">市場</th>
+            <th data-col="說明財報期" onclick="sortU('說明財報期')">財報期</th>
+            <th data-col="日期" onclick="sortU('日期')">通過日</th>
+            <th data-col="財報錨點" onclick="sortU('財報錨點')">截止日</th>
+            <th data-col="即將法說日" onclick="sortU('即將法說日')">即將法說日</th>
+            <th data-col="即將法說時間" onclick="sortU('即將法說時間')">時間</th>
+            <th>地點</th>
+            <th>公告主旨</th>
+          </tr></thead>
+          <tbody id="utbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="pending-board" class="ir-board">
+    <div class="ir-board-head">
+      <button class="ir-board-back" onclick="closeIRBoard()">← 返回</button>
+      <span class="ir-board-title">📋 尚未舉行法說會</span>
+      <div class="ir-board-spacer"></div>
+    </div>
+    <div class="ir-board-search">
+      <input id="pending-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderPending()">
+    </div>
+    <div class="ir-board-scroll">
+      <div class="ir-board-body">
+        <div id="p-meta" style="font-size:12px;font-weight:700;margin-bottom:10px;"></div>
+        <div id="p-981a-bar" class="etf981a-bar"></div>
+        <table id="ptable">
+          <thead><tr>
+            <th data-col="公司代號" onclick="sortP('公司代號')">代號</th>
+            <th data-col="公司名稱" onclick="sortP('公司名稱')">名稱</th>
+            <th data-col="市場" onclick="sortP('市場')">市場</th>
+            <th data-col="說明財報期" onclick="sortP('說明財報期')">財報期</th>
+            <th data-col="日期" onclick="sortP('日期')">通過日</th>
+            <th data-col="財報錨點" onclick="sortP('財報錨點')">截止日</th>
+            <th data-col="距截止日交易日" onclick="sortP('距截止日交易日')">距截止(交易日)</th>
+            <th>公告主旨</th>
+          </tr></thead>
+          <tbody id="ptbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <div id="detail">
     <button id="back-btn" onclick="goHome()">← 返回主頁</button>
     <div id="ch">
@@ -1166,6 +1627,14 @@ const INDUSTRIES = __INDUSTRIES__;
 const LARGE_CAP  = new Set(__LARGE_CAP__);
 const PENDING_IR  = __PENDING_IR__;
 const UPCOMING_IR = __UPCOMING_IR__;
+const ETF981A         = __ETF981A__;
+const ETF981A_DATE    = "__ETF981A_DATE__";
+const ETF981A_METRICS = __ETF981A_METRICS__;
+const ETF981A_PREV      = __ETF981A_PREV__;
+const ETF981A_PREV_DATE = "__ETF981A_PREV_DATE__";
+const ETF981A_NAMES     = __ETF981A_NAMES__;
+const FUTURES           = new Set(__FUTURES__);
+const ETF981A_NAV_DELTA = __ETF981A_NAV_DELTA__;
 
 const PERIOD_ICON = {
   'Q1財報':'🌱','Q2財報':'☀️','Q3財報':'🍂','Q4財報':'❄️',
@@ -1431,6 +1900,8 @@ function goHome() {
   activeCode = null;
   renderSidebar(document.getElementById('srch').value);
   document.getElementById('detail').style.display = 'none';
+  document.getElementById('upcoming-board').classList.remove('visible');
+  document.getElementById('pending-board').classList.remove('visible');
   document.getElementById('home').style.display = 'block';
 }
 
@@ -1526,20 +1997,42 @@ function selectYear(yr) {
 let pSortCol = '日期';
 let pSortAsc = false;
 
-function openPending() {
-  document.getElementById('pending-panel').classList.add('open');
-  document.getElementById('pending-overlay').classList.add('open');
-  renderPending();
+function openIRBoard(which) {
+  document.getElementById('home').style.display   = 'none';
+  document.getElementById('detail').style.display = 'none';
+  document.getElementById('upcoming-board').classList.toggle('visible', which === 'upcoming');
+  document.getElementById('pending-board').classList.toggle('visible',  which === 'pending');
+  window.scrollTo(0, 0);
 }
-function closePending() {
-  document.getElementById('pending-panel').classList.remove('open');
-  document.getElementById('pending-overlay').classList.remove('open');
+function closeIRBoard() {
+  document.getElementById('upcoming-board').classList.remove('visible');
+  document.getElementById('pending-board').classList.remove('visible');
+  document.getElementById('home').style.display = 'block';
 }
 function sortP(col) {
   if (pSortCol === col) pSortAsc = !pSortAsc;
   else { pSortCol = col; pSortAsc = true; }
   renderPending();
 }
+function etfPriority(code) {
+  if (Object.prototype.hasOwnProperty.call(ETF981A, code)) {
+    const w = parseFloat((ETF981A[code]||'').replace('%',''));
+    return isNaN(w) ? -0.001 : -w;   // 成分股：負權重，愈大愈前
+  }
+  return FUTURES.has(code) ? 1 : 2;  // 有期貨 → 其他
+}
+function weightDelta(code) {
+  if (!Object.prototype.hasOwnProperty.call(ETF981A_PREV, code)) return '';
+  const curr = parseFloat((ETF981A[code]||'').replace('%',''));
+  const prev = parseFloat((ETF981A_PREV[code]||'').replace('%',''));
+  if (isNaN(curr) || isNaN(prev)) return '';
+  const d = Math.round((curr - prev) * 100) / 100;
+  if (Math.abs(d) < 0.005) return '';
+  const sign = d > 0 ? '+' : '';
+  const col  = d > 0 ? '#f87171' : '#4ade80';
+  return `<span style="color:${col};font-size:10px;font-weight:800;margin-left:3px">【${sign}${d.toFixed(2)}%】</span>`;
+}
+
 function renderPending() {
   const q = (document.getElementById('pending-search')?.value || '').toLowerCase().trim();
   const data = [...PENDING_IR].filter(r => {
@@ -1549,26 +2042,61 @@ function renderPending() {
   }).sort((a, b) => {
     let va = a[pSortCol], vb = b[pSortCol];
     if (va == null) va = ''; if (vb == null) vb = '';
+    let primary;
     if (typeof va === 'number' && typeof vb === 'number')
-      return pSortAsc ? va - vb : vb - va;
-    return pSortAsc
-      ? String(va).localeCompare(String(vb), 'zh-TW')
-      : String(vb).localeCompare(String(va), 'zh-TW');
+      primary = pSortAsc ? va - vb : vb - va;
+    else
+      primary = pSortAsc
+        ? String(va).localeCompare(String(vb), 'zh-TW')
+        : String(vb).localeCompare(String(va), 'zh-TW');
+    if (primary !== 0) return primary;
+    return etfPriority(String(a['公司代號']||'').trim()) - etfPriority(String(b['公司代號']||'').trim());
   });
   document.querySelectorAll('#ptable th[data-col]').forEach(th => {
     th.classList.remove('asc','desc');
     if (th.dataset.col === pSortCol) th.classList.add(pSortAsc ? 'asc' : 'desc');
   });
-  document.getElementById('p-meta').textContent = `共 ${data.length} 筆（總計 ${PENDING_IR.length} 筆）`;
+  const _p981aLabel = ETF981A_DATE ? `<span class="etf981a-label">📊 00981A 截至 ${ETF981A_DATE}</span>` : '';
+  document.getElementById('p-meta').innerHTML = `<span>共 ${data.length} 筆（總計 ${PENDING_IR.length} 筆）</span>${_p981aLabel}`;
+  const _pSeen = new Set();
+  const _p981aChips = data.filter(r => {
+    const c = String(r['公司代號']||'').trim();
+    if (!Object.prototype.hasOwnProperty.call(ETF981A, c) || _pSeen.has(c)) return false;
+    _pSeen.add(c); return true;
+  });
+  const _pBar = document.getElementById('p-981a-bar');
+  if (_p981aChips.length > 0) {
+    _pBar.style.display = 'flex';
+    _pBar.innerHTML = `<span class="etf981a-bar-lbl">📊 成分股（${_p981aChips.length}）：</span>`
+      + _p981aChips.map(r => {
+          const c = String(r['公司代號']||'').trim();
+          const hasFut = FUTURES.has(c);
+          const nm = hasFut ? `<b>${r['公司名稱']||c}</b>` : (r['公司名稱']||c);
+          const fw = hasFut ? '' : 'font-weight:400;';
+          return `<span class="etf981a-chip" style="${fw}">${nm}（${ETF981A[c]}）${weightDelta(c)}</span>`;
+        }).join('');
+  } else {
+    _pBar.style.display = 'none';
+  }
   document.getElementById('ptbody').innerHTML = data.map(r => {
     const td = r['距截止日交易日'];
-    const isLarge = LARGE_CAP.has(String(r['公司代號'] || '').trim());
+    const code = String(r['公司代號']||'').trim();
+    const isLarge = LARGE_CAP.has(code);
+    const is981a  = Object.prototype.hasOwnProperty.call(ETF981A, code);
+    const hasFut  = FUTURES.has(code);
     const mkt = r['市場'] || '';
     const mktHtml = mkt ? `<span class="${mkt.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${mkt}</span>` : '';
     const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
+    const weightHtml = is981a ? `<span class="etf981a-weight">權重：${ETF981A[code]}</span>` : '';
+    const codeStyle = isLarge ? 'color:#1d4ed8' : '';
+    const codeFw = !is981a && hasFut ? 'font-weight:900' : '';
+    const nameEl = (is981a && hasFut) ? `<b style="color:#f97316">${r['公司名稱']||''}</b>`
+                 : is981a             ? `<span style="color:#f97316">${r['公司名稱']||''}</span>`
+                 : hasFut             ? `<b>${r['公司名稱']||''}</b>`
+                 :                      (r['公司名稱']||'');
     return `<tr>
-      <td><strong style="${isLarge ? 'color:#1d4ed8' : ''}">${r['公司代號']||''}</strong></td>
-      <td>${r['公司名稱']||''}</td>
+      <td><strong style="${[codeStyle,codeFw].filter(Boolean).join(';')}">${r['公司代號']||''}</strong></td>
+      <td>${nameEl}${weightHtml}</td>
       <td>${mktHtml}</td>
       <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
       <td>${r['日期']||''}</td>
@@ -1583,15 +2111,6 @@ function renderPending() {
 let uSortCol = '即將法說日';
 let uSortAsc = true;
 
-function openUpcoming() {
-  document.getElementById('upcoming-panel').classList.add('open');
-  document.getElementById('upcoming-overlay').classList.add('open');
-  renderUpcoming();
-}
-function closeUpcoming() {
-  document.getElementById('upcoming-panel').classList.remove('open');
-  document.getElementById('upcoming-overlay').classList.remove('open');
-}
 function sortU(col) {
   if (uSortCol === col) uSortAsc = !uSortAsc;
   else { uSortCol = col; uSortAsc = true; }
@@ -1606,26 +2125,61 @@ function renderUpcoming() {
   }).sort((a, b) => {
     let va = a[uSortCol], vb = b[uSortCol];
     if (va == null) va = ''; if (vb == null) vb = '';
+    let primary;
     if (typeof va === 'number' && typeof vb === 'number')
-      return uSortAsc ? va - vb : vb - va;
-    return uSortAsc
-      ? String(va).localeCompare(String(vb), 'zh-TW')
-      : String(vb).localeCompare(String(va), 'zh-TW');
+      primary = uSortAsc ? va - vb : vb - va;
+    else
+      primary = uSortAsc
+        ? String(va).localeCompare(String(vb), 'zh-TW')
+        : String(vb).localeCompare(String(va), 'zh-TW');
+    if (primary !== 0) return primary;
+    return etfPriority(String(a['公司代號']||'').trim()) - etfPriority(String(b['公司代號']||'').trim());
   });
   document.querySelectorAll('#utable th[data-col]').forEach(th => {
     th.classList.remove('asc','desc');
     if (th.dataset.col === uSortCol) th.classList.add(uSortAsc ? 'asc' : 'desc');
   });
-  document.getElementById('u-meta').textContent = `共 ${data.length} 筆（總計 ${UPCOMING_IR.length} 筆）`;
+  const _u981aLabel = ETF981A_DATE ? `<span class="etf981a-label">📊 00981A 截至 ${ETF981A_DATE}</span>` : '';
+  document.getElementById('u-meta').innerHTML = `<span>共 ${data.length} 筆（總計 ${UPCOMING_IR.length} 筆）</span>${_u981aLabel}`;
+  const _uSeen = new Set();
+  const _u981aChips = data.filter(r => {
+    const c = String(r['公司代號']||'').trim();
+    if (!Object.prototype.hasOwnProperty.call(ETF981A, c) || _uSeen.has(c)) return false;
+    _uSeen.add(c); return true;
+  });
+  const _uBar = document.getElementById('u-981a-bar');
+  if (_u981aChips.length > 0) {
+    _uBar.style.display = 'flex';
+    _uBar.innerHTML = `<span class="etf981a-bar-lbl">📊 成分股（${_u981aChips.length}）：</span>`
+      + _u981aChips.map(r => {
+          const c = String(r['公司代號']||'').trim();
+          const hasFut = FUTURES.has(c);
+          const nm = hasFut ? `<b>${r['公司名稱']||c}</b>` : (r['公司名稱']||c);
+          const fw = hasFut ? '' : 'font-weight:400;';
+          return `<span class="etf981a-chip" style="${fw}">${nm}（${ETF981A[c]}）${weightDelta(c)}</span>`;
+        }).join('');
+  } else {
+    _uBar.style.display = 'none';
+  }
   document.getElementById('utbody').innerHTML = data.map(r => {
-    const isLarge = LARGE_CAP.has(String(r['公司代號']||'').trim());
+    const code    = String(r['公司代號']||'').trim();
+    const isLarge = LARGE_CAP.has(code);
     const isNew   = r['即將法說新'] === true;
+    const is981a  = Object.prototype.hasOwnProperty.call(ETF981A, code);
+    const hasFut  = FUTURES.has(code);
     const mkt = r['市場'] || '';
     const mktHtml = mkt ? `<span class="${mkt.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${mkt}</span>` : '';
     const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
+    const weightHtml = is981a ? `<span class="etf981a-weight">權重：${ETF981A[code]}</span>` : '';
+    const codeStyleU = isLarge ? 'color:#1d4ed8' : '';
+    const codeFwU = !is981a && hasFut ? 'font-weight:900' : '';
+    const nameElU = (is981a && hasFut) ? `<b style="color:#f97316">${r['公司名稱']||''}</b>`
+                  : is981a             ? `<span style="color:#f97316">${r['公司名稱']||''}</span>`
+                  : hasFut             ? `<b>${r['公司名稱']||''}</b>`
+                  :                      (r['公司名稱']||'');
     return `<tr>
-      <td><strong style="${isLarge ? 'color:#1d4ed8' : ''}">${r['公司代號']||''}</strong>${isNew ? '<span class="new-badge">NEW</span>' : ''}</td>
-      <td>${r['公司名稱']||''}</td>
+      <td><strong style="${[codeStyleU,codeFwU].filter(Boolean).join(';')}">${r['公司代號']||''}</strong>${isNew ? '<span class="new-badge">NEW</span>' : ''}</td>
+      <td>${nameElU}${weightHtml}</td>
       <td>${mktHtml}</td>
       <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
       <td>${r['日期']||''}</td>
@@ -1641,7 +2195,109 @@ function renderUpcoming() {
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pending-cnt').textContent  = PENDING_IR.length;
   document.getElementById('upcoming-cnt').textContent = UPCOMING_IR.length;
+  renderUpcoming();
+  renderPending();
+  // 00981A 卡片
+  const m = ETF981A_METRICS;
+  const hasMetrics = m && (m.diff_groups || m.nav_per_unit || m.total_nav);
+  if (hasMetrics) {
+    document.getElementById('etf981a-card').classList.add('visible');
+    if (ETF981A_DATE) document.getElementById('etf981a-date-tag').textContent = `截至 ${ETF981A_DATE} 資料`;
+    if (m.diff_groups) {
+      const el = document.getElementById('etf-diff');
+      el.textContent = m.diff_groups;
+      el.className = 'value ' + (m.diff_sign === 'pos' ? 'pos' : 'neg');
+    }
+    if (m.total_nav) document.getElementById('etf-nav-total').textContent = m.total_nav;
+    if (m.nav_per_unit) document.getElementById('etf-nav-unit').textContent = m.nav_per_unit;
+    // NAV 前日差異小字
+    const nd = ETF981A_NAV_DELTA || {};
+    function setDelta(elId, pct) {
+      if (!pct) return;
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const isUp = pct.startsWith('+');
+      el.textContent = pct;
+      el.className = 'delta ' + (isUp ? 'up' : 'dn');
+    }
+    setDelta('etf-nav-total-delta', nd.total_nav_pct);
+    setDelta('etf-nav-unit-delta',  nd.nav_unit_pct);
+  }
+  // 成分股差異
+  if (ETF981A_PREV && Object.keys(ETF981A_PREV).length > 0 && Object.keys(ETF981A).length > 0) {
+    const upcomingSet = new Set(UPCOMING_IR.map(r => String(r['公司代號']||'').trim()));
+    const pendingSet  = new Set(PENDING_IR.map(r => String(r['公司代號']||'').trim()));
+    const histSet     = new Set(RECORDS.map(r => String(r['公司代號']||'').trim()));
+    const nameMap     = Object.assign({}, ETF981A_NAMES);
+    RECORDS.forEach(r => { const c=String(r['公司代號']||'').trim(); if(c&&!nameMap[c]) nameMap[c]=r['公司名稱']||''; });
+    UPCOMING_IR.forEach(r => { const c=String(r['公司代號']||'').trim(); if(c) nameMap[c]=r['公司名稱']||nameMap[c]||''; });
+    PENDING_IR.forEach(r => { const c=String(r['公司代號']||'').trim(); if(c) nameMap[c]=r['公司名稱']||nameMap[c]||''; });
+
+    const diffItems = [];
+    for (const code of Object.keys(ETF981A)) {
+      if (!Object.prototype.hasOwnProperty.call(ETF981A_PREV, code))
+        diffItems.push({code, type:'add', prevW:null, currW:ETF981A[code]});
+    }
+    for (const code of Object.keys(ETF981A_PREV)) {
+      if (!Object.prototype.hasOwnProperty.call(ETF981A, code))
+        diffItems.push({code, type:'remove', prevW:ETF981A_PREV[code], currW:null});
+    }
+    for (const code of Object.keys(ETF981A)) {
+      if (Object.prototype.hasOwnProperty.call(ETF981A_PREV, code) && ETF981A_PREV[code] !== ETF981A[code])
+        diffItems.push({code, type:'change', prevW:ETF981A_PREV[code], currW:ETF981A[code]});
+    }
+
+    if (diffItems.length > 0) {
+      if (ETF981A_PREV_DATE) document.getElementById('etf981a-prev-date-label').textContent = `vs ${ETF981A_PREV_DATE}`;
+      const tbody = document.getElementById('etf981a-diff-body');
+      diffItems.forEach(({code, type, prevW, currW}) => {
+        let color, bg;
+        if      (upcomingSet.has(code)) { color='#f97316'; bg='rgba(249,115,22,.08)'; }
+        else if (pendingSet.has(code))  { color='#fb923c'; bg='rgba(251,146,60,.08)'; }
+        else if (histSet.has(code))     { color='#60a5fa'; bg='rgba(96,165,250,.07)'; }
+        else                            { color='#94a3b8'; bg='transparent'; }
+        const prefix = type==='add' ? '＋' : type==='remove' ? '－' : '↕';
+        const name = nameMap[code] || '';
+        const tr = document.createElement('tr');
+        tr.style.background = bg;
+        // 計算差異欄
+        let deltaCell = '<td style="text-align:center;color:#475569">—</td>';
+        if (type === 'change') {
+          const pv = parseFloat((prevW||'').replace('%',''));
+          const cv = parseFloat((currW||'').replace('%',''));
+          if (!isNaN(pv) && !isNaN(cv)) {
+            const d = Math.round((cv - pv) * 100) / 100;
+            const sign = d > 0 ? '+' : '';
+            const dc = d > 0 ? '#f87171' : '#4ade80';
+            const arrow = d > 0 ? '↑' : '↓';
+            deltaCell = `<td style="text-align:center;color:${dc};font-weight:800;font-size:12px;white-space:nowrap">${arrow} ${sign}${d.toFixed(2)}%</td>`;
+          }
+        } else if (type === 'add') {
+          deltaCell = `<td style="text-align:center;color:#f87171;font-weight:800;font-size:12px">NEW</td>`;
+        } else {
+          deltaCell = `<td style="text-align:center;color:#4ade80;font-weight:800;font-size:12px">OUT</td>`;
+        }
+        tr.innerHTML = `<td class="diff-type" style="color:${color}">${prefix}</td>`
+                     + `<td class="diff-code" style="color:${color}">${code}</td>`
+                     + `<td class="diff-name" style="color:#e2e8f0">${name}</td>`
+                     + `<td class="diff-w" style="color:#94a3b8">${type==='add'?'—':prevW}</td>`
+                     + deltaCell
+                     + `<td class="diff-w" style="color:${type==='remove'?'#94a3b8':color}">${type==='remove'?'—':currW}</td>`;
+        tbody.appendChild(tr);
+      });
+      const btn = document.getElementById('etf981a-toggle');
+      btn.style.display = 'block';
+      document.getElementById('etf981a-diff-cnt').textContent = `（${diffItems.length} 筆）`;
+    }
+  }
 });
+function toggleEtfDiff() {
+  const diff = document.getElementById('etf981a-diff');
+  const btn  = document.getElementById('etf981a-toggle');
+  const open = diff.style.display !== 'none' && diff.style.display !== '';
+  diff.style.display = open ? 'none' : 'block';
+  btn.classList.toggle('open', !open);
+}
 </script>
 </body>
 </html>"""
