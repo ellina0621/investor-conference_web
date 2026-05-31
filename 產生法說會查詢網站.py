@@ -1093,23 +1093,32 @@ def build_report_df(upcoming_all, large_cap_int):
                 else: tgt = None
                 if tgt is not None:
                     bucket[tgt].append((T, ir['時間'], ir['擇要'], typ))
+        def _rank(c):
+            tm = _an_time_min(c[1])
+            return (c[0], tm if tm is not None else 9999)
+        def _mk(c):
+            T, tm, detail, typ = c
+            return {'日期': T.date().isoformat(), '時間': tm, '時段': _seg_of(_an_time_min(tm)),
+                    '主辦': _broker_type(detail), '類型': typ,
+                    '擇要': (str(detail) if detail is not None else '')}
         for pos in range(len(q)):
             idx = q.loc[pos, 'index']
-            cands = sorted(bucket[pos], key=lambda x: (x[0], _an_time_min(x[1]) if _an_time_min(x[1]) is not None else 9999))
-            sessions = []; seen = set()
-            for (T, tm, detail, typ) in cands:
-                seg = _seg_of(_an_time_min(tm)); brk = _broker_type(detail)
-                grp = '外資' if brk == '外資' else '非外資'
-                key = (seg, grp)
-                if key in seen: continue          # 每時段：外資取一、非外資(內資/自辦/其他)取一
-                seen.add(key)
-                sessions.append({'日期': T.date().isoformat(), '時間': tm, '時段': seg,
-                                 '主辦': brk, '類型': typ, '擇要': (str(detail) if detail is not None else '')})
+            cands = sorted(bucket[pos], key=_rank)
+            # 主場 = 第一場「非外資」；整季只有外資時退用第一場
+            non_foreign = [c for c in cands if _broker_type(c[2]) != '外資']
+            main_c = non_foreign[0] if non_foreign else (cands[0] if cands else None)
+            sessions = []
+            if main_c is not None:
+                _mr = _rank(main_c)
+                # 領先外資：主場之前才有的第一場外資（早上外資先開、之後才有非外資）
+                lead_c = next((c for c in cands if _broker_type(c[2]) == '外資' and _rank(c) < _mr), None)
+                if lead_c is not None: sessions.append(_mk(lead_c))
+                sessions.append(_mk(main_c))
             morn = [s for s in sessions if s['時段'] == '早上']
             aft  = [s for s in sessions if s['時段'] == '下午']
             first_m = morn[0] if morn else None
             first_a = aft[0] if aft else None
-            primary = first_a or first_m or (sessions[0] if sessions else None)
+            primary = _mk(main_c) if main_c is not None else None
             recs[idx] = dict(
                 早上法說日=first_m['日期'] if first_m else None,
                 早上法說時間=first_m['時間'] if first_m else None,
