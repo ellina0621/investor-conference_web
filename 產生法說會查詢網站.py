@@ -1057,6 +1057,14 @@ def _seg_of(tmin):
     if tmin is None: return None
     return '早上' if tmin < PM_CUTOFF_MIN else '下午'
 
+def _qmatch(qkey, ment):
+    """季別比對：同 key 命中；且 Q4 與 年報 視為同一件事（年度結算=第四季）。"""
+    if qkey in ment: return True
+    y, p = qkey
+    if p == '年報' and (y, 'Q4') in ment: return True
+    if p == 'Q4'  and (y, '年報') in ment: return True
+    return False
+
 def build_report_df(upcoming_all, large_cap_int):
     """各季各家：以『法說當下已通過的最近一季』互斥歸季（含時間上下限）；
     每季依（時段 早上/下午 × 主辦 外資/內資/自辦/其他）各取第一場 → 法說清單。"""
@@ -1078,8 +1086,8 @@ def build_report_df(upcoming_all, large_cap_int):
                 jp = passed[-1] if passed else None
                 jn = future[0] if future else None
                 # 時間上下限：避免缺董事會資料時，舊法說亂掛到最早一季
-                if jp is not None and q_keys[jp] in ment: tgt, typ = jp, '後續法說'
-                elif jn is not None and q_keys[jn] in ment: tgt, typ = jn, '前置法說'
+                if jp is not None and _qmatch(q_keys[jp], ment): tgt, typ = jp, '後續法說'
+                elif jn is not None and _qmatch(q_keys[jn], ment): tgt, typ = jn, '前置法說'
                 elif jp is not None and (T - q_pass[jp]).days <= 120: tgt, typ = jp, '後續法說'
                 elif jn is not None and (q_pass[jn] - T).days <= 90: tgt, typ = jn, '前置法說'
                 else: tgt = None
