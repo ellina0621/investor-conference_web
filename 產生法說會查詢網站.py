@@ -8,7 +8,7 @@ import os
 import re
 import threading
 import webbrowser
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import time
 import urllib3
@@ -672,11 +672,14 @@ def scrape_00981a_holdings():
     try:
         driver.get(ETF981A_URL)
         time.sleep(4)
-        today = datetime.today()
-        for delta in range(0, 7):
-            target = today - timedelta(days=delta)
-            if target.weekday() >= 5:      # 跳週末
-                continue
+        today = pd.Timestamp(datetime.today().date())
+        _cal = xcals.get_calendar('XTAI')
+        _sess = [s.tz_localize(None) for s in
+                 _cal.sessions_in_range(today - pd.Timedelta(days=12), today + pd.Timedelta(days=12))]
+        _nxt = next((s for s in _sess if s > today), None)            # 次一交易日
+        _upto = _nxt if _nxt is not None else today
+        # 從「次一交易日」往回查；第一張有效 PCF 即最新（前一營業日上傳、含當日淨值）
+        for target in sorted([s for s in _sess if s <= _upto], reverse=True)[:7]:
             roc_str = f'{target.year - 1911}/{target.month:02d}/{target.day:02d}'
             # 輸入民國日期
             try:
@@ -839,15 +842,386 @@ def scrape_upcoming_ir():
     return upcoming, new_keys
 
 
+# ════════════════════════════════════════════════════════════════════
+#  董事會財報分析（由 董事會財務分析.ipynb 移植；本檔為單一可執行來源）
+# ════════════════════════════════════════════════════════════════════
+import numpy as np
+
+BOARD_PASS_CSV    = os.path.join(BASE, '董事會通過.csv')
+BOARD_RESOLVE_CSV = os.path.join(BASE, '董事會決議.csv')
+ANNOUNCE_FIN_CSV  = os.path.join(BASE, '公告財報.csv')
+AMPM_TRACK_JSON   = os.path.join(BASE, '法說_早上待下午.json')
+_an_xtai = xcals.get_calendar('XTAI')
+PM_CUTOFF_MIN = 13 * 60 + 30      # 13:30 → 之後算下午
+
+_ACN = {'一':'1','ㄧ':'1','二':'2','三':'3','四':'4','五':'5','六':'6',
+        '七':'7','八':'8','九':'9','〇':'0','○':'0','零':'0','０':'0'}
+def _an_cn_year(s): return int(''.join(_ACN[c] for c in s if c in _ACN))
+_AQ_CN = {'一':'Q1','二':'Q2','三':'Q3','四':'Q4','1':'Q1','2':'Q2','3':'Q3','4':'Q4'}
+
+def _an_extract_roc_year(title, fallback):
+    fallback = int(fallback)
+    m = re.search(r'\((\d{3})年\)', title)
+    if m: return int(m.group(1))
+    m = re.search(r'(?<!\d)(\d{3})(?!\d)年', title)
+    if m: return int(m.group(1))
+    m = re.search(r'(20[012]\d)年', title)
+    if m: return int(m.group(1)) - 1911
+    _cn3 = r'[一ㄧ二三四五六七八九〇○零０]{3}'
+    m = re.search(rf'民國({_cn3})年', title)
+    if m: return _an_cn_year(m.group(1))
+    _any = r'[一二三四五六七八九〇○零０ㄧ]'
+    m = re.search(rf'([一ㄧ]{_any}{_any})年', title)
+    if m:
+        y = _an_cn_year(m.group(1))
+        if 100 <= y <= 130: return y
+    return fallback
+
+def _an_extract_period(title):
+    m = re.search(r'第([一二三四1234])季', title)
+    if m: return _AQ_CN.get(m.group(1))
+    m = re.search(r'Q([1234])', title, re.IGNORECASE)
+    if m: return f'Q{m.group(1)}'
+    if re.search(r'年度|全年|(\d{3})度', title): return '年報'
+    if re.search(r'(?<!\d)\d{3}(?!\d)年|民國|[一ㄧ][〇○一]', title): return '年報'
+    return '其他'
+
+_AN_EXCLUDE = re.compile(r'主管異動|背書保證|財務預測|財務危機|財測|財務長|財務副|帳務|財物|重編|資金貸與|現金貸')
+_AN_INCLUDE = re.compile(r'財務報告|財務報表|財報')
+
+def parse_report_period(title, announce_roc_year):
+    t = str(title).replace('\r\n', ' ').replace('\n', ' ')
+    if _AN_EXCLUDE.search(t): return (None, None)
+    if not _AN_INCLUDE.search(t): return (None, None)
+    # 預告開會日期（如「董事會召開日期」「財務報告預計通過董事會日期」「預計召開日期」）非實際通過 → 排除
+    # 真正通過的主旨一定有「業經…董事會通過/決議通過」；預告型沒有「業經」
+    if '業經' not in t and (re.search(r'召開日期', t) or ('預計' in t and re.search(r'通過|召開|日期', t))):
+        return (None, None)
+    announce_roc_year = int(announce_roc_year)
+    fy = _an_extract_roc_year(t, announce_roc_year)
+    period = _an_extract_period(t)
+    if abs(fy - announce_roc_year) > 2: fy = announce_roc_year
+    if period in ('Q4', '年報') and fy >= announce_roc_year: fy = announce_roc_year - 1
+    return (fy, period)
+
+_LC_ANNUAL_FY = {111: (3, 16), 112: (3, 15), 113: (3, 17), 114: (3, 16)}   # 財報民國年 → (月,日)，於隔年
+def _an_lc_annual(fy):
+    m, d = _LC_ANNUAL_FY.get(int(fy), (3, 16))
+    return date(int(fy) + 1912, m, d)
+
+def get_deadline(period, fy, large):
+    fy = int(fy); ce = fy + 1911
+    if period == 'Q1': return date(ce, 5, 15)
+    if period == 'Q2': return date(ce, 8, 14)
+    if period == 'Q3': return date(ce, 11, 14)
+    if period == 'Q4': return date(ce + 1, 3, 31)
+    if period == '年報': return _an_lc_annual(fy) if large else date(ce + 1, 4, 1)
+    return None
+
+def _an_roc_to_date(s):
+    try:
+        y, m, d = map(int, str(s).split('/')[:3]); return date(y + 1911, m, d)
+    except Exception:
+        return None
+
+def parse_board_date(subject, filing):
+    t = str(subject).replace('\r\n', ' ').replace('\n', ' ')
+    m = re.search(r'於(\d{3})年(\d{1,2})月(\d{1,2})日', t)
+    if m:
+        try:
+            dt = date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3)))
+            f = _an_roc_to_date(filing)
+            if f and abs((dt - f).days) <= 60: return dt
+        except Exception:
+            pass
+    return _an_roc_to_date(filing)
+
+_AQ_T = {'一':'Q1','二':'Q2','三':'Q3','四':'Q4','1':'Q1','2':'Q2','3':'Q3','4':'Q4'}
+_OUTLOOK_RE = re.compile(r'(20\d{2}|1[01]\d)?年?第([一二三四1-4])季(?:業績|營運|獲利)?(?:展望|預期|預估|預測)')
+
+def extract_reported_periods(text, conf_date):
+    """本場法說『報告』的財報期別 set[(財報民國年, 期別)]，排除展望季。"""
+    if text is None or (isinstance(text, float) and pd.isna(text)): return set()
+    t = str(text)
+    if not t.strip(): return set()
+    allp = set()
+    for y, q in re.findall(r'(20\d{2})年度?第([一二三四1-4])季', t): allp.add((int(y) - 1911, _AQ_T[q]))
+    for y, q in re.findall(r'(1[01]\d)年度?第([一二三四1-4])季', t): allp.add((int(y), _AQ_T[q]))
+    for y, q in re.findall(r'(20\d{2})[Qq]([1-4])', t): allp.add((int(y) - 1911, f'Q{q}'))
+    for y, q in re.findall(r'(1[01]\d)[Qq]([1-4])', t): allp.add((int(y), f'Q{q}'))
+    for y in re.findall(r'(20\d{2})年?(?:度|全年|年報)', t): allp.add((int(y) - 1911, '年報'))
+    for y in re.findall(r'(1[01]\d)年度', t): allp.add((int(y), '年報'))
+    if conf_date is not None:
+        yr = conf_date.year - 1911
+        for q in re.findall(r'第([一二三四1-4])季', t):
+            qs = _AQ_T[q]; allp.add((yr - 1 if qs == 'Q4' else yr, qs))
+    outlook = set()
+    for m in _OUTLOOK_RE.finditer(t):
+        y = m.group(1); qs = _AQ_T[m.group(2)]
+        if y: fy = int(y) - 1911 if int(y) >= 1911 else int(y)
+        elif conf_date is not None: fy = conf_date.year - 1911
+        else: fy = None
+        if fy is not None: outlook.add((fy, qs))
+    rep = allp - outlook
+    return rep if rep else allp
+
+def _an_ce_date(s):
+    try:
+        y, m, d = map(int, str(s).split('/')[:3]); return date(y, m, d)
+    except Exception:
+        return None
+
+def _an_time_min(t):
+    m = re.match(r'(\d{1,2}):(\d{2})', str(t).strip())
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+def _an_td_signed(a, b):
+    try:
+        a = pd.Timestamp(a); b = pd.Timestamp(b)
+        if a > b: return -len(_an_xtai.sessions_in_range(b, a))
+        return len(_an_xtai.sessions_in_range(a, b))
+    except Exception:
+        return np.nan
+
+def load_board_reports(large_cap_int):
+    """合併 董事會通過 + 決議 + 公告財報 → 各季各家財報列（每季取最早通過日）。"""
+    frames = []
+    for p in (BOARD_PASS_CSV, BOARD_RESOLVE_CSV, ANNOUNCE_FIN_CSV):
+        if os.path.exists(p):
+            frames.append(pd.read_csv(p, encoding='utf-8-sig'))
+    b = pd.concat(frames, ignore_index=True)
+    b['代號'] = pd.to_numeric(b['代號'], errors='coerce')
+    b = b.dropna(subset=['代號']); b['代號'] = b['代號'].astype(int)
+    b = b.drop_duplicates(subset=['代號', '日期', '序號', '主旨'])
+    per = b.apply(lambda r: parse_report_period(r['主旨'], r['民國年']), axis=1)
+    b['財報民國年'] = [p[0] for p in per]; b['期別'] = [p[1] for p in per]
+    fr = b.dropna(subset=['期別']).copy()
+    fr = fr[fr['期別'] != '其他']
+    fr['財報民國年'] = fr['財報民國年'].astype(int)
+    fr['大型股'] = fr['代號'].isin(large_cap_int)
+    fr['截止日'] = fr.apply(lambda r: get_deadline(r['期別'], r['財報民國年'], r['大型股']), axis=1)
+    fr['通過日'] = fr.apply(lambda r: parse_board_date(r['主旨'], r['日期']), axis=1)
+    fr = fr.dropna(subset=['通過日', '截止日']).sort_values('通過日')
+    season = (fr.groupby(['代號', '財報民國年', '期別'], as_index=False)
+                .agg(簡稱=('簡稱', 'first'), 市場別=('市場別', 'first'),
+                     大型股=('大型股', 'first'), 截止日=('截止日', 'first'),
+                     通過日=('通過日', 'first'), 主旨=('主旨', 'first')))
+    return season
+
+def load_ir_pool(upcoming_all):
+    """法說池 = 歷史法說會 CSV + 即將法說(upcoming，含時間)，去重。"""
+    parts = []
+    for folder in (TWSE_PATH, OTC_PATH):
+        for f in sorted(glob.glob(os.path.join(folder, '*.csv'))):
+            parts.append(pd.read_csv(f, encoding='cp950', encoding_errors='ignore', on_bad_lines='skip'))
+    inv = pd.concat(parts, ignore_index=True)
+    inv['代號'] = inv['公司代號'].astype(str).str.strip()
+    inv['法說日'] = inv['召開法人說明會日期'].apply(_an_roc_to_date)
+    inv['時間'] = inv['召開法人說明會時間'].astype(str).apply(_ir_norm_time)
+    inv['擇要'] = inv['法人說明會擇要訊息'] if '法人說明會擇要訊息' in inv.columns else ''
+    hist = inv[['代號', '法說日', '時間', '擇要']].dropna(subset=['法說日'])
+    up_rows = []
+    for ev in (upcoming_all or []):
+        code = str(ev.get('co_code', '')).strip()
+        d = _an_ce_date(ev.get('date', ''))
+        if code and d:
+            up_rows.append({'代號': code, '法說日': d,
+                            '時間': _ir_norm_time(str(ev.get('time', ''))),
+                            '擇要': ev.get('detail', '')})
+    up = pd.DataFrame(up_rows, columns=['代號', '法說日', '時間', '擇要'])
+    pool = pd.concat([hist, up], ignore_index=True)
+    pool = pool.drop_duplicates(subset=['代號', '法說日', '時間'])
+    pool['擇要報告期'] = pool.apply(lambda r: extract_reported_periods(r['擇要'], r['法說日']), axis=1)
+    return pool
+
+# 主辦券商分類：外資（受邀英文/國外券商）、內資（國內券商）、自辦、其他
+_FOREIGN_KW = ('高盛', 'Goldman', '匯豐', '滙豐', 'HSBC', '花旗', 'Citi', '美林', 'Merrill', 'BofA',
+               '美銀', 'Bank of America', '摩根士丹利', 'Morgan Stanley', '大摩', '摩根大通',
+               'J.P. Morgan', 'JPMorgan', 'JP Morgan', '小摩', '瑞銀', 'UBS', '瑞信', '瑞士信貸',
+               'Credit Suisse', '麥格理', 'Macquarie', '野村', 'Nomura', '瑞穗', 'Mizuho',
+               'Jefferies', '巴克萊', 'Barclays', '德意志', 'Deutsche', '里昂', 'CLSA', '大和',
+               'Daiwa', '法國巴黎', 'BNP', '星展', 'DBS')
+_DOMESTIC_KW = ('凱基', 'KGI', '元大', '永豐', '群益', '富邦', '國泰', '統一綜合', '華南永昌', '華南',
+                '台新', '兆豐', '中國信託', '中信', '第一金', '日盛', '宏遠', '康和', '大昌', '致和',
+                '福邦', '犇亞', '元富', '玉山', '新光', '德信', '大慶', '美好', '亞東', '陽信', '國票', '永昌')
+
+def _broker_type(text):
+    t = str(text or '')
+    if any(kw in t for kw in _FOREIGN_KW): return '外資'
+    if any(kw in t for kw in _DOMESTIC_KW): return '內資'
+    if '受邀' in t or '邀請' in t: return '其他'        # 受邀但券商名未辨識
+    if '本公司' in t and re.search(r'法人說明會|法說|財務報告|業績|營運|展望', t): return '自辦'
+    return '其他'
+
+def _seg_of(tmin):
+    if tmin is None: return None
+    return '早上' if tmin < PM_CUTOFF_MIN else '下午'
+
+def build_report_df(upcoming_all, large_cap_int):
+    """各季各家：以『法說當下已通過的最近一季』互斥歸季（含時間上下限）；
+    每季依（時段 早上/下午 × 主辦 外資/內資/自辦/其他）各取第一場 → 法說清單。"""
+    season = load_board_reports(large_cap_int)
+    pool = load_ir_pool(upcoming_all)
+    pool_by_code = {c: g.sort_values('法說日') for c, g in pool.groupby('代號')}
+    recs = {}
+    for code, comp in season.groupby(season['代號'].astype(str)):
+        q = comp.sort_values('通過日').reset_index()
+        q_keys = list(zip(q['財報民國年'], q['期別']))
+        q_pass = [pd.Timestamp(d) for d in q['通過日']]
+        bucket = {i: [] for i in range(len(q))}
+        g = pool_by_code.get(code)
+        if g is not None:
+            for _, ir in g.iterrows():
+                T = pd.Timestamp(ir['法說日']); ment = ir['擇要報告期']
+                passed = [j for j in range(len(q)) if q_pass[j] <= T]
+                future = [j for j in range(len(q)) if q_pass[j] > T]
+                jp = passed[-1] if passed else None
+                jn = future[0] if future else None
+                # 時間上下限：避免缺董事會資料時，舊法說亂掛到最早一季
+                if jp is not None and q_keys[jp] in ment: tgt, typ = jp, '後續法說'
+                elif jn is not None and q_keys[jn] in ment: tgt, typ = jn, '前置法說'
+                elif jp is not None and (T - q_pass[jp]).days <= 120: tgt, typ = jp, '後續法說'
+                elif jn is not None and (q_pass[jn] - T).days <= 90: tgt, typ = jn, '前置法說'
+                else: tgt = None
+                if tgt is not None:
+                    bucket[tgt].append((T, ir['時間'], ir['擇要'], typ))
+        for pos in range(len(q)):
+            idx = q.loc[pos, 'index']
+            cands = sorted(bucket[pos], key=lambda x: (x[0], _an_time_min(x[1]) if _an_time_min(x[1]) is not None else 9999))
+            sessions = []; seen = set()
+            for (T, tm, detail, typ) in cands:
+                seg = _seg_of(_an_time_min(tm)); brk = _broker_type(detail)
+                grp = '外資' if brk == '外資' else '非外資'
+                key = (seg, grp)
+                if key in seen: continue          # 每時段：外資取一、非外資(內資/自辦/其他)取一
+                seen.add(key)
+                sessions.append({'日期': T.date().isoformat(), '時間': tm, '時段': seg,
+                                 '主辦': brk, '類型': typ, '擇要': (str(detail) if detail is not None else '')})
+            morn = [s for s in sessions if s['時段'] == '早上']
+            aft  = [s for s in sessions if s['時段'] == '下午']
+            first_m = morn[0] if morn else None
+            first_a = aft[0] if aft else None
+            primary = first_a or first_m or (sessions[0] if sessions else None)
+            recs[idx] = dict(
+                早上法說日=first_m['日期'] if first_m else None,
+                早上法說時間=first_m['時間'] if first_m else None,
+                下午法說日=first_a['日期'] if first_a else None,
+                下午法說時間=first_a['時間'] if first_a else None,
+                首次法說日=(pd.Timestamp(primary['日期']).date() if primary else None),
+                法說時間=primary['時間'] if primary else None,
+                法說擇要=primary['擇要'] if primary else None,
+                法說類型=primary['類型'] if primary else None,
+                法說時段=primary['時段'] if primary else None,
+                法說清單=sessions,
+            )
+    for col in ['早上法說日', '早上法說時間', '下午法說日', '下午法說時間',
+                '首次法說日', '法說時間', '法說擇要', '法說類型', '法說時段', '法說清單']:
+        season[col] = season.index.map(lambda i: recs.get(i, {}).get(col))
+    season['距截止交易日'] = season.apply(lambda r: _an_td_signed(r['通過日'], r['截止日']), axis=1)
+    season['通過到法說交易日'] = season.apply(
+        lambda r: _an_td_signed(r['通過日'], r['首次法說日']) if pd.notna(r['首次法說日']) else None, axis=1)
+    season['法說到截止交易日'] = season.apply(
+        lambda r: _an_td_signed(r['首次法說日'], r['截止日']) if pd.notna(r['首次法說日']) else None, axis=1)
+    season = season[season['距截止交易日'].between(-100, 100)].copy()
+    return season
+
+def write_ampm_tracking(df, etf_codes, futures_codes):
+    """當前申報季：早上已開、第一場下午還沒開的公司 → JSON（全部公司）。"""
+    cy = date.today().year
+    valid = {(cy - 1, '年報'), (cy - 1, 'Q4'), (cy, 'Q1'), (cy, 'Q2'), (cy, 'Q3')}
+    etf_set = {str(c) for c in (etf_codes or [])}
+    fut_set = {str(c) for c in (futures_codes or [])}
+    out = []
+    for _, r in df.iterrows():
+        if (int(r['財報民國年']) + 1911, r['期別']) not in valid:
+            continue
+        if pd.notna(r['早上法說日']) and pd.isna(r['下午法說日']):
+            code = str(r['代號'])
+            out.append({
+                '代號': code, '名稱': r['簡稱'],
+                '財報期': f"{int(r['財報民國年']) + 1911} {r['期別']}",
+                '早上法說日': str(r['早上法說日']), '早上法說時間': r['早上法說時間'],
+                '是否成分股': code in etf_set, '是否有個股期': code in fut_set,
+            })
+    out.sort(key=lambda x: x['早上法說日'], reverse=True)
+    with open(AMPM_TRACK_JSON, 'w', encoding='utf-8') as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    print(f'  早上待下午追蹤：{len(out)} 家 → {os.path.basename(AMPM_TRACK_JSON)}')
+    return out
+
+
 def main():
-    print('讀取財報_df.pkl…')
-    df = pd.read_pickle(PKL_PATH)
+    # ── 1. 讀實收資本額（大型股名單）──
+    print('讀取實收資本額.csv…')
+    large_cap_codes = set()
+    with open(CAP_CSV, 'rb') as f:
+        cap_text = f.read().decode('utf-16')
+    for line in cap_text.splitlines()[1:]:
+        parts = line.split('\t')
+        if len(parts) < 2:
+            continue
+        code = parts[0].strip().split()[0]
+        try:
+            if float(parts[1].strip().replace(',', '')) >= LARGE_CAP_THRESHOLD:
+                large_cap_codes.add(code)
+        except Exception:
+            pass
+    large_cap_int = {int(c) for c in large_cap_codes if str(c).isdigit()}
+    print(f'  大型股(>=100億)：{len(large_cap_codes)} 家')
+
+    # ── 2. 啟動即時爬蟲：00981A 成分股 ──
+    print('爬取 00981A 成分股…')
+    etf981a_holdings, etf981a_date, etf981a_metrics = {}, '', {}
+    try:
+        etf981a_holdings, etf981a_date, etf981a_metrics = scrape_00981a_holdings()
+        if etf981a_holdings:
+            _full = etf981a_metrics.pop('_date_full', '') or _mmdd_to_full(etf981a_date)
+            save_etf981a_daily(etf981a_holdings, _full, is_full_date=True)
+            save_etf981a_nav(etf981a_metrics, _full)
+    except Exception as _e:
+        print(f'  [警告] 00981A 爬取失敗：{_e}')
+    etf981a_nav_delta = {}
+    try:
+        etf981a_nav_delta = load_etf981a_nav_delta(_mmdd_to_full(etf981a_date) if etf981a_date else '')
+    except Exception as _e:
+        print(f'  [警告] 計算NAV差異失敗：{_e}')
+    etf981a_prev, etf981a_prev_date, etf981a_names = {}, '', {}
+    try:
+        etf981a_prev, etf981a_prev_date, etf981a_names = load_etf981a_prev(ETF981A_CSV, etf981a_date)
+        print(f'  00981A 前日基準：{etf981a_prev_date}（{len(etf981a_prev)} 檔）')
+    except Exception as _e:
+        print(f'  [警告] 讀取00981A前日資料失敗：{_e}')
+
+    # ── 3. 啟動即時爬蟲：即將法說（每次啟動都上去爬，看是否有新資料）──
+    print('爬取近期法說會（MOPS）…')
+    upcoming_all, _new_ev_keys = [], set()
+    try:
+        upcoming_all, _new_ev_keys = scrape_upcoming_ir()
+    except Exception as _e:
+        print(f'  [警告] 法說爬取失敗：{_e}')
+
+    # ── 4. 讀個股期貨清單 ──
+    print('讀取個股期貨代號…')
+    futures_codes = load_futures_codes()
+
+    # ── 5. 分析：合併董事會通過/決議/公告財報 + 法說(含即將法說) → 財報_df ──
+    print('分析 財報_df（含即將法說 + 早上/下午）…')
+    df = build_report_df(upcoming_all, large_cap_int)
+    df.to_pickle(PKL_PATH)
+    print(f'  財報_df：{len(df):,} 列')
+    write_ampm_tracking(df, etf981a_holdings.keys(), futures_codes)
 
     # ── 欄位對應 ────────────────────────────────────────────────
     out = pd.DataFrame()
     out['公司代號'] = df['代號'].astype(str).str.strip()
     out['公司名稱'] = df['簡稱'].astype(str)
-    out['日期']    = pd.to_datetime(df['通過日'])
+
+    # 前置法說會優先用法說日期；其餘用通過日期
+    is_before_ir = df['法說類型'].eq('前置法說')
+    out['日期'] = (
+        pd.to_datetime(df['首次法說日']).where(is_before_ir,
+                                              pd.to_datetime(df['通過日']))
+    )
 
     out['召開法人說明會時間'] = (
         df['法說時間'].where(df['法說時間'].notna(), None)
@@ -870,7 +1244,11 @@ def main():
 
     # 網站慣例：正=截止後，負=截止前
     # 財報_df 慣例：正=截止前（剩餘），負=截止後（逾期）→ 取反
-    out['距截止日交易日'] = (-df['距截止交易日']).astype(int)
+    # 前置法說會用法說到截止的交易日；其餘用通過到截止的交易日
+    is_before_ir = df['法說類型'].eq('前置法說')
+    out['距截止日交易日'] = (
+        (-df['法說到截止交易日']).where(is_before_ir, (-df['距截止交易日']))
+    ).astype(int)
     out['前後'] = out['距截止日交易日'].apply(
         lambda x: '截止日後' if x > 0 else ('截止日前' if x < 0 else '截止日當天')
     )
@@ -895,31 +1273,25 @@ def main():
     # 董事會通過 → 首次法說會 相差日曆天數
     diff = (out['法說日'] - out['日期']).dt.days
     out['通過到法說天數'] = diff.where(diff.notna(), other=None)
-    # 首次法說 → 截止日 交易日數（正=截止前，負=截止後；已在 notebook 算好）
+    # 首次法說 → 截止日 交易日數（正=截止前，負=截止後）
     out['法說到截止交易日'] = (
         df['法說到截止交易日'] if '法說到截止交易日' in df.columns else None
     )
 
-    print(f'  載入 {len(out):,} 筆')
+    # 早上/下午場（每季 first-morning + first-afternoon；primary 已優先下午）
+    out['法說時段']   = df['法說時段']   if '法說時段'   in df.columns else None
+    out['早上法說日'] = pd.to_datetime(df['早上法說日'], errors='coerce') if '早上法說日' in df.columns else pd.NaT
+    out['早上法說時間'] = df['早上法說時間'] if '早上法說時間' in df.columns else None
+    out['下午法說日'] = pd.to_datetime(df['下午法說日'], errors='coerce') if '下午法說日' in df.columns else pd.NaT
+    out['下午法說時間'] = df['下午法說時間'] if '下午法說時間' in df.columns else None
+    # 法說清單（每季 時段×主辦 各第一場）；網站用版去掉擇要、用短鍵以控制體積（JS 端還原）
+    def _slim_sessions(lst):
+        if not isinstance(lst, list): return []
+        return [{'d': s.get('日期'), 't': s.get('時間'), 's': s.get('時段'),
+                 'o': s.get('主辦'), 'y': s.get('類型')} for s in lst]
+    out['法說清單'] = df['法說清單'].apply(_slim_sessions) if '法說清單' in df.columns else [[] for _ in range(len(df))]
 
-    # ── 讀取實收資本額 ──────────────────────────────────────────
-    print('讀取實收資本額.csv…')
-    with open(CAP_CSV, 'rb') as f:
-        cap_text = f.read().decode('utf-16')
-    cap_lines = cap_text.splitlines()
-    large_cap_codes = set()
-    for line in cap_lines[1:]:
-        parts = line.split('\t')
-        if len(parts) < 2:
-            continue
-        code = parts[0].strip().split()[0]
-        try:
-            cap = float(parts[1].strip().replace(',', ''))
-            if cap >= LARGE_CAP_THRESHOLD:
-                large_cap_codes.add(code)
-        except Exception:
-            pass
-    print(f'  大型股(>=100億)：{len(large_cap_codes)} 家')
+    print(f'  載入 {len(out):,} 筆')
 
     # ── 讀取 firm_data ──────────────────────────────────────────
     print('讀取 firm_data.csv…')
@@ -941,7 +1313,8 @@ def main():
     print('產生 HTML…')
     _cols = ['公司代號', '公司名稱', '日期', '法說日', '通過到法說天數', '主旨',
              '召開法人說明會時間', '財報期別', '財報年度', '財報錨點', '前後',
-             '距截止日交易日', '法說到截止交易日', '市場', '說明財報期', '法人說明會擇要訊息']
+             '距截止日交易日', '法說到截止交易日', '市場', '說明財報期', '法人說明會擇要訊息',
+             '法說時段', '早上法說日', '早上法說時間', '下午法說日', '下午法說時間', '法說清單']
     ex = out[[c for c in _cols if c in out.columns]].copy()
     ex['公司代號'] = ex['公司代號'].astype(str).str.strip()
     ex['日期']    = ex['日期'].dt.strftime('%Y-%m-%d')
@@ -951,102 +1324,66 @@ def main():
     ex['財報錨點'] = ex['財報錨點'].apply(
         lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None
     )
+    for _dc in ['早上法說日', '下午法說日']:
+        if _dc in ex.columns:
+            ex[_dc] = ex[_dc].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None)
 
-    data_json       = json.dumps(ex.to_dict(orient='records'), ensure_ascii=False)
+    # 只保留有產業分類的公司（移除未分類興櫃/冷門股），縮小資料量
+    ex = ex[ex['公司代號'].isin(firm_info)].copy()
+    print(f'  RECORDS（已分類）：{len(ex):,} 筆')
+    # 短鍵序列化以縮小 index.html（JS 端 _rh() 還原成中文鍵）
+    _KEYMAP = {'公司代號':'A','公司名稱':'B','日期':'C','法說日':'D','通過到法說天數':'E','主旨':'F',
+               '召開法人說明會時間':'G','財報期別':'H','財報年度':'I','財報錨點':'J','前後':'K',
+               '距截止日交易日':'L','法說到截止交易日':'M','市場':'N','說明財報期':'O','法人說明會擇要訊息':'P',
+               '法說時段':'Q','早上法說日':'R','早上法說時間':'S','下午法說日':'T','下午法說時間':'U','法說清單':'V',
+               '即將法說日':'W','即將法說時間':'X','即將法說地點':'Y','即將法說新':'Z'}
+
+    data_json       = json.dumps(ex.rename(columns=_KEYMAP).to_dict(orient='records'), ensure_ascii=False)
     firm_info_json  = json.dumps(firm_info, ensure_ascii=False)
     industries_json = json.dumps(industries, ensure_ascii=False)
     large_cap_json  = json.dumps(sorted(large_cap_codes), ensure_ascii=False)
 
-    # 已通過但尚未舉行法說會的公司（只顯示近期相關財報期）
-    curr_year = date.today().year
-    prev_year = curr_year - 1
-    _valid_periods = {
-        f'{prev_year} 年報',
-        f'{prev_year} Q4',
-        f'{curr_year} Q1',
-        f'{curr_year} Q2',
-        f'{curr_year} Q3',
-    }
-    _no_ir = ex['法說日'].isna() if '法說日' in ex.columns else pd.Series(True, index=ex.index)
-    if '說明財報期' in ex.columns:
-        _no_ir = _no_ir & ex['說明財報期'].isin(_valid_periods)
-    pending_base = ex[_no_ir].sort_values('日期', ascending=False).copy()
-    print(f'  待法說（未過濾）：{len(pending_base):,} 筆（財報期限：{sorted(_valid_periods)}）')
+    # 已通過但尚未舉行法說會的公司（即時資料只追「當下這一季」，依日期切換）
+    #   4/1–6/30→Q1、7/1–9/30→Q2、10/1–12/31→Q3、1/1–3/31→前一年年報/Q4
+    _td = date.today()
+    _y = _td.year
+    if   4  <= _td.month <= 6:  _valid_periods = {f'{_y} Q1'}
+    elif 7  <= _td.month <= 9:  _valid_periods = {f'{_y} Q2'}
+    elif 10 <= _td.month <= 12: _valid_periods = {f'{_y} Q3'}
+    else:                       _valid_periods = {f'{_y - 1} 年報', f'{_y - 1} Q4'}
+    _td_str = _td.strftime('%Y-%m-%d')
+    _is_cur = ex['說明財報期'].isin(_valid_periods) if '說明財報期' in ex.columns else pd.Series(False, index=ex.index)
+    cur = ex[_is_cur].copy()
+    # 待法說：當季完全沒法說（連排定都沒有）
+    pending_no_ir_df = cur[cur['法說日'].isna()].sort_values('日期', ascending=False).copy()
+    # 即將法說：當季法說已排定、今天(含)之後還沒開（法說日 >= 今天）
+    _future = cur['法說日'].notna() & (cur['法說日'].astype(str) >= _td_str)
+    pending_has_ir_df = cur[_future].sort_values('法說日').copy()
 
-    # 個股期貨清單
-    print('讀取個股期貨代號…')
-    futures_codes = load_futures_codes()
-
-    # 爬取 00981A 成分股
-    print('爬取 00981A 成分股…')
-    etf981a_holdings: dict = {}
-    etf981a_date = ''
-    etf981a_metrics: dict = {}
-    try:
-        etf981a_holdings, etf981a_date, etf981a_metrics = scrape_00981a_holdings()
-        if etf981a_holdings:
-            _full = etf981a_metrics.pop('_date_full', '') or _mmdd_to_full(etf981a_date)
-            save_etf981a_daily(etf981a_holdings, _full, is_full_date=True)
-            save_etf981a_nav(etf981a_metrics, _full)
-    except Exception as _e:
-        print(f'  [警告] 00981A 爬取失敗：{_e}')
-    etf981a_nav_delta: dict = {}
-    try:
-        _full_check = _mmdd_to_full(etf981a_date) if etf981a_date else ''
-        etf981a_nav_delta = load_etf981a_nav_delta(_full_check)
-    except Exception as _e:
-        print(f'  [警告] 計算NAV差異失敗：{_e}')
-    etf981a_prev: dict = {}
-    etf981a_prev_date = ''
-    etf981a_names: dict = {}
-    try:
-        etf981a_prev, etf981a_prev_date, etf981a_names = load_etf981a_prev(ETF981A_CSV, etf981a_date)
-        print(f'  00981A 前日基準：{etf981a_prev_date}（{len(etf981a_prev)} 檔）')
-    except Exception as _e:
-        print(f'  [警告] 讀取00981A前日資料失敗：{_e}')
-
-    # 爬取近期法說會
-    print('爬取近期法說會（MOPS）…')
-    upcoming_all = []
-    _new_ev_keys: set = set()
-    try:
-        upcoming_all, _new_ev_keys = scrape_upcoming_ir()
-    except Exception as _e:
-        print(f'  [警告] 法說爬取失敗：{_e}')
-
-    # 比對 pending vs upcoming → 分兩個 board
+    # 即將法說詳情：法說日/時間用分析結果；地點、是否新爬從 upcoming 補
     upcoming_by_code: dict = {}
     for _ev in upcoming_all:
-        _code = str(_ev.get('co_code', '')).strip()
-        if _code:
-            upcoming_by_code.setdefault(_code, []).append(_ev)
-
-    _codes_s = pending_base['公司代號'].astype(str).str.strip()
-    _mask_up = _codes_s.isin(upcoming_by_code)
-
-    pending_no_ir_df  = pending_base[~_mask_up].copy()
-    pending_has_ir_df = pending_base[_mask_up].copy()
-
-    # 新增即將法說詳情 + 是否新爬到
+        _c = str(_ev.get('co_code', '')).strip()
+        if _c:
+            upcoming_by_code.setdefault(_c, []).append(_ev)
+    def _up_match(code, dt):
+        for ev in upcoming_by_code.get(str(code), []):
+            if str(ev.get('date', '')).replace('/', '-') == str(dt):
+                return ev
+        return {}
     if not pending_has_ir_df.empty:
-        _ph_codes = pending_has_ir_df['公司代號'].astype(str).str.strip()
-        pending_has_ir_df['即將法說日']   = _ph_codes.apply(
-            lambda c: upcoming_by_code[c][0].get('date', '') if c in upcoming_by_code else '')
-        pending_has_ir_df['即將法說時間'] = _ph_codes.apply(
-            lambda c: upcoming_by_code[c][0].get('time', '') if c in upcoming_by_code else '')
-        pending_has_ir_df['即將法說地點'] = _ph_codes.apply(
-            lambda c: upcoming_by_code[c][0].get('location', '') if c in upcoming_by_code else '')
-        # True = 這次爬蟲才首次出現的法說
-        pending_has_ir_df['即將法說新']   = _ph_codes.apply(
-            lambda c: any(
-                f"{c}|{ev.get('date','')}|{ev.get('time','')}" in _new_ev_keys
-                for ev in upcoming_by_code.get(c, [])
-            )
-        )
+        pending_has_ir_df['即將法說日']   = pending_has_ir_df['法說日']
+        pending_has_ir_df['即將法說時間'] = pending_has_ir_df['召開法人說明會時間'].fillna('')
+        _evs = [_up_match(c, d) for c, d in zip(pending_has_ir_df['公司代號'], pending_has_ir_df['法說日'])]
+        pending_has_ir_df['即將法說地點'] = [ev.get('location', '') for ev in _evs]
+        pending_has_ir_df['即將法說新']   = [
+            f"{c}|{ev.get('date','')}|{ev.get('time','')}" in _new_ev_keys
+            for c, ev in zip(pending_has_ir_df['公司代號'], _evs)]
 
-    print(f'  待法說：{len(pending_no_ir_df):,} 筆　即將法說：{len(pending_has_ir_df):,} 筆')
+    print(f'  當季 {sorted(_valid_periods)}：待法說 {len(pending_no_ir_df):,} 筆　即將法說 {len(pending_has_ir_df):,} 筆')
 
     def _df_to_json(df):
+        df = df.rename(columns=_KEYMAP)
         return json.dumps(df.where(df.notna(), other=None).to_dict(orient='records'), ensure_ascii=False)
 
     pending_ir_json  = _df_to_json(pending_no_ir_df)
@@ -1156,10 +1493,11 @@ body:not(.sb-off) #sb-toggle{left:246px;}
 
 /* company item */
 .ci{
-  padding:8px 10px 8px 14px;margin:2px 0;
+  padding:10px 12px 10px 16px;margin:3px 0;
   color:#93c5fd;font-size:14px;cursor:pointer;
   border-radius:10px;display:flex;align-items:center;gap:6px;
   transition:.15s;border-left:3px solid transparent;
+  line-height:1.5;
 }
 .ci:hover{background:#112233;color:#bfdbfe;}
 .ci.active{background:#1e3a5f;border-left-color:#3b82f6;color:#fff;}
@@ -1168,22 +1506,23 @@ body:not(.sb-off) #sb-toggle{left:246px;}
 .ci.active .ci-name{color:#93c5fd;}
 
 /* ── MAIN ── */
-#main{flex:1;overflow-y:auto;padding:32px 38px;transition:padding .25s;}
-body.sb-off #main{padding-left:58px;}
+#main{flex:1;overflow-y:auto;padding:48px 56px;transition:padding .25s;}
+body.sb-off #main{padding-left:76px;}
 #main::-webkit-scrollbar{width:5px;}
 #main::-webkit-scrollbar-thumb{background:#bfdbfe;border-radius:5px;}
 
 /* home grid */
 #home{display:block;}
-#home-title{font-size:26px;font-weight:900;color:#1e3a5f;margin-bottom:6px;}
-#home-sub{font-size:14px;color:#6b8fc7;font-weight:700;margin-bottom:24px;}
+#home-title{font-size:28px;font-weight:900;color:#1e3a5f;margin-bottom:10px;line-height:1.4;}
+#home-sub{font-size:15px;color:#6b8fc7;font-weight:700;margin-bottom:32px;line-height:1.6;}
 
 /* 00981A info card */
 #etf981a-card{
   display:none;margin-bottom:24px;
-  background:linear-gradient(135deg,#0d2137 0%,#1e3a5f 100%);
+  background:#eef4ff;
+  border:2px solid #bfdbfe;
   border-radius:16px;padding:16px 22px;
-  box-shadow:0 4px 18px rgba(0,0,0,.15);
+  box-shadow:0 2px 10px rgba(59,130,246,.08);
   font-family:'Nunito',sans-serif;
 }
 #etf981a-card.visible{display:block;}
@@ -1191,48 +1530,48 @@ body.sb-off #main{padding-left:58px;}
   display:flex;justify-content:space-between;align-items:center;
   margin-bottom:14px;
 }
-#etf981a-card-head .title{font-size:14px;font-weight:900;color:#B0E2FF;letter-spacing:.3px;}
-#etf981a-card-head .date-tag{font-size:11px;color:#93c5fd;font-weight:700;
-  background:rgba(255,255,255,.08);padding:3px 10px;border-radius:8px;}
+#etf981a-card-head .title{font-size:14px;font-weight:900;color:#1e3a5f;letter-spacing:.3px;}
+#etf981a-card-head .date-tag{font-size:11px;color:#6b8fc7;font-weight:700;
+  background:rgba(59,130,246,.08);padding:3px 10px;border-radius:8px;}
 #etf981a-metrics{display:flex;gap:12px;}
 .etf-metric{
-  flex:1;background:rgba(255,255,255,.07);border-radius:12px;
-  padding:10px 14px;text-align:center;border:1px solid rgba(255,255,255,.1);
+  flex:1;background:#1e3a5f;border-radius:12px;
+  padding:10px 14px;text-align:center;border:1px solid #2d5a8a;
 }
 .etf-metric .label{font-size:10px;color:#93c5fd;font-weight:700;margin-bottom:6px;letter-spacing:.3px;}
-.etf-metric .value{font-size:20px;font-weight:900;line-height:1;}
+.etf-metric .value{font-size:20px;font-weight:900;line-height:1;color:#fff;}
 .etf-metric .unit{font-size:10px;color:#93c5fd;font-weight:700;margin-top:3px;}
 .etf-metric .value.pos{color:#f87171;}
-.etf-metric .value.neg{color:#4ade80;}
-.etf-metric .value.neutral{color:#B0E2FF;}
+.etf-metric .value.neg{color:#06402b;}
+.etf-metric .value.neutral{color:#fff;}
 .etf-metric .delta{font-size:10px;font-weight:800;margin-top:2px;line-height:1;}
 .etf-metric .delta.up{color:#f87171;}
-.etf-metric .delta.dn{color:#4ade80;}
+.etf-metric .delta.dn{color:#06402b;}
 #etf981a-toggle{margin-top:12px;text-align:center;cursor:pointer;
-  font-size:11px;color:#93c5fd;font-weight:700;letter-spacing:.3px;
-  padding:6px;border-radius:8px;border:1px solid rgba(255,255,255,.1);
-  background:rgba(255,255,255,.04);transition:background .15s;user-select:none;}
-#etf981a-toggle:hover{background:rgba(255,255,255,.09);}
+  font-size:11px;color:#2563eb;font-weight:700;letter-spacing:.3px;
+  padding:6px;border-radius:8px;border:1px solid #dbeafe;
+  background:#fff;transition:background .15s;user-select:none;}
+#etf981a-toggle:hover{background:#eff6ff;}
 #etf981a-toggle .arrow{display:inline-block;transition:transform .2s;margin-left:4px;}
 #etf981a-toggle.open .arrow{transform:rotate(180deg);}
-#etf981a-diff{display:none;margin-top:12px;border-top:1px solid rgba(255,255,255,.1);padding-top:12px;}
-#etf981a-diff-title{font-size:11px;color:#93c5fd;font-weight:700;margin-bottom:8px;}
-#etf981a-diff table{width:100%;border-collapse:collapse;font-size:12px;}
-#etf981a-diff th{text-align:left;padding:5px 10px;color:#93c5fd;font-size:10px;font-weight:700;
-  border-bottom:1px solid rgba(255,255,255,.12);white-space:nowrap;}
-#etf981a-diff td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.06);
-  vertical-align:middle;white-space:nowrap;}
+#etf981a-diff{display:none;margin-top:12px;border-top:1px solid rgba(0,0,0,.1);padding-top:12px;}
+#etf981a-diff-title{font-size:11px;color:#1e293b;font-weight:700;margin-bottom:8px;}
+#etf981a-diff table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;}
+#etf981a-diff th{text-align:left;padding:8px 12px;color:#1e293b;font-size:10px;font-weight:700;
+  border-bottom:1px solid rgba(0,0,0,.1);white-space:nowrap;background:#f8fafc;}
+#etf981a-diff td{padding:8px 12px;border-bottom:1px solid rgba(0,0,0,.06);
+  vertical-align:middle;white-space:nowrap;color:#1e293b;background:#fff;}
 #etf981a-diff tr:last-child td{border-bottom:none;}
 #etf981a-diff .diff-type{font-weight:900;font-size:14px;text-align:center;}
 #etf981a-diff .diff-code{font-weight:900;}
-#etf981a-diff .diff-name{opacity:.8;}
+#etf981a-diff .diff-name{opacity:.9;}
 #etf981a-diff .diff-w{font-weight:700;font-family:monospace;font-size:11px;}
-#etf981a-diff .diff-arrow{color:#94a3b8;font-size:10px;}
+#etf981a-diff .diff-arrow{color:#64748b;font-size:10px;}
 
 /* deadline timeline */
-#dl-section{margin-bottom:32px;}
-#dl-title{font-size:14px;font-weight:800;color:#1e3a5f;margin-bottom:12px;display:flex;align-items:center;gap:6px;}
-#dl-row{display:flex;gap:10px;flex-wrap:wrap;}
+#dl-section{margin-bottom:40px;}
+#dl-title{font-size:14px;font-weight:800;color:#1e3a5f;margin-bottom:16px;display:flex;align-items:center;gap:6px;}
+#dl-row{display:flex;gap:12px;flex-wrap:wrap;}
 .dl-chip{
   display:flex;flex-direction:column;align-items:center;gap:3px;
   padding:10px 14px;border-radius:14px;border:2px solid transparent;
@@ -1253,7 +1592,7 @@ body.sb-off #main{padding-left:58px;}
 #ind-grid{
   display:grid;
   grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
-  gap:12px;
+  gap:20px;
 }
 .ind-card{
   background:#fff;border-radius:16px;
@@ -1264,21 +1603,21 @@ body.sb-off #main{padding-left:58px;}
 .ind-card:hover{box-shadow:0 4px 18px rgba(59,130,246,.15);}
 .ind-card.open{border-color:#3b82f6;}
 .ind-card-head{
-  display:flex;align-items:center;gap:12px;
-  padding:16px 18px;cursor:pointer;
+  display:flex;align-items:center;gap:14px;
+  padding:20px 24px;cursor:pointer;
   transition:background .15s;
 }
 .ind-card-head:hover{background:#f0f6ff;}
 .ind-card.open .ind-card-head{background:#eff6ff;border-bottom:2px solid #dbeafe;}
-.ic-emoji{font-size:26px;flex-shrink:0;}
-.ic-name{font-size:15px;font-weight:800;color:#1e3a5f;flex:1;line-height:1.3;}
-.ic-cnt{font-size:12px;font-weight:700;color:#fff;background:#002366;padding:2px 10px;border-radius:10px;flex-shrink:0;}
+.ic-emoji{font-size:28px;flex-shrink:0;}
+.ic-name{font-size:16px;font-weight:800;color:#1e3a5f;flex:1;line-height:1.4;}
+.ic-cnt{font-size:12px;font-weight:700;color:#fff;background:#002366;padding:3px 12px;border-radius:10px;flex-shrink:0;}
 .ic-arrow{font-size:12px;color:#93c5fd;flex-shrink:0;transition:transform .2s;}
 .ind-card.open .ic-arrow{transform:rotate(180deg);}
-.ind-card-body{display:none;padding:12px 14px;flex-wrap:wrap;gap:6px;}
+.ind-card-body{display:none;padding:18px 22px;flex-wrap:wrap;gap:10px;}
 .ind-card.open .ind-card-body{display:flex;}
 .co-chip{
-  padding:5px 12px;border-radius:10px;
+  padding:7px 16px;border-radius:10px;
   background:#f0f6ff;color:#1e3a5f;
   font-size:13px;font-weight:700;cursor:pointer;
   border:1.5px solid #dbeafe;transition:.15s;
@@ -1389,35 +1728,37 @@ body.sb-off #main{padding-left:58px;}
 .panel-search-bar input::placeholder{color:#93c5fd;}
 
 /* Tables */
-#p-meta,#u-meta{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;}
+#p-meta,#u-meta{font-size:14px;font-weight:700;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;}
 #u-meta{color:#2A5470;}
 #p-meta{color:#6b8fc7;}
-#ptable{width:100%;border-collapse:collapse;font-size:13px;background:#fff;
+#ptable{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;background:#fff;
   border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(59,130,246,.1);}
 #ptable th{
-  padding:10px 12px;background:#0d2137;color:#93c5fd;
-  font-size:12px;font-weight:800;text-align:left;
+  padding:16px 22px;background:#f8fafc;color:#1e293b;
+  font-size:12px;font-weight:600;letter-spacing:0.5px;text-align:left;
   cursor:pointer;user-select:none;white-space:nowrap;
+  line-height:1.6;border-bottom:2px solid #e2e8f0;
 }
-#ptable th:hover{background:#1e3a5f;color:#bfdbfe;}
+#ptable th:hover{background:#f1f5f9;color:#0f172a;}
 #ptable th.asc::after{content:' ▲';}
 #ptable th.desc::after{content:' ▼';}
-#ptable td{padding:8px 12px;color:#1e3a5f;border-bottom:1px solid #f0f6ff;}
+#ptable td{padding:14px 22px;color:#1e293b;border-bottom:1px solid #e2e8f0;line-height:1.8;font-weight:500;letter-spacing:0.3px;}
 #ptable tr:last-child td{border-bottom:none;}
-#ptable tr:hover td{background:#f8fbff;}
-#utable{width:100%;border-collapse:collapse;font-size:13px;background:#fff;
-  border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(42,84,112,.12);}
+#ptable tr:hover td{background:#f8fafc !important;}
+#utable{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;background:#fff;
+  border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(42,84,112,.1);}
 #utable th{
-  padding:10px 12px;background:#2A5470;color:#B0E2FF;
-  font-size:12px;font-weight:800;text-align:left;
+  padding:16px 22px;background:#f8fafc;color:#1e293b;
+  font-size:12px;font-weight:600;letter-spacing:0.5px;text-align:left;
   cursor:pointer;user-select:none;white-space:nowrap;
+  line-height:1.6;border-bottom:2px solid #e2e8f0;
 }
-#utable th:hover{background:#1e3a5f;color:#bfdbfe;}
+#utable th:hover{background:#f1f5f9;color:#0f172a;}
 #utable th.asc::after{content:' ▲';}
 #utable th.desc::after{content:' ▼';}
-#utable td{padding:8px 12px;color:#1e3a5f;border-bottom:1px solid #eef4ff;}
+#utable td{padding:14px 22px;color:#1e293b;border-bottom:1px solid #e2e8f0;line-height:1.8;font-weight:500;letter-spacing:0.3px;}
 #utable tr:last-child td{border-bottom:none;}
-#utable tr:hover td{background:#f0f6ff;}
+#utable tr:hover td{background:#f8fafc !important;}
 .new-badge{
   display:inline-block;background:#ef4444;color:#fff;
   font-size:10px;font-weight:900;letter-spacing:.3px;
@@ -1429,6 +1770,13 @@ body.sb-off #main{padding-left:58px;}
 .etf981a-weight{display:block;font-size:10px;color:#f97316;font-weight:700;margin-top:1px;line-height:1.3;}
 #p-meta,#u-meta{display:flex;justify-content:space-between;align-items:center;}
 .etf981a-label{font-size:11px;color:#f97316;font-weight:700;}
+.table-legend{display:flex;gap:24px;margin-bottom:16px;padding:10px 0;flex-wrap:wrap;}
+.legend-item{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;}
+.legend-dot{width:16px;height:16px;border-radius:4px;flex-shrink:0;}
+.legend-orange{background:#fff5ee;border:1.5px solid #f97316;}
+.legend-blue{background:#e0f2fe;border:1.5px solid #0369a1;}
+.legend-text{color:#6b8fc7;}
+.legend-green{background:#ecfdf5;border:1.5px solid #059669;}
 .etf981a-bar{display:none;flex-wrap:wrap;align-items:center;gap:6px;
   margin-bottom:12px;padding:8px 12px;border-radius:10px;
   background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.2);}
@@ -1454,23 +1802,23 @@ body.sb-off #main{padding-left:58px;}
 }
 
 /* Q Cards */
-#qs{display:flex;flex-direction:column;gap:18px;}
+#qs{display:flex;flex-direction:column;gap:28px;}
 .qc{background:#fff;border-radius:18px;box-shadow:0 4px 18px rgba(59,130,246,.1);overflow:hidden;border:2px solid #dbeafe;transition:.2s;}
 .qc:hover{box-shadow:0 6px 24px rgba(59,130,246,.18);}
-.qh{padding:14px 20px;font-weight:900;font-size:17px;color:#1e3a5f;display:flex;align-items:center;gap:8px;background:linear-gradient(90deg,#eff6ff,#fff);border-bottom:2px solid #dbeafe;}
-.qh-icon{font-size:20px;}
-.qbody{padding:14px 20px 18px;display:flex;flex-direction:column;gap:10px;}
+.qh{padding:18px 28px;font-weight:900;font-size:18px;color:#1e3a5f;display:flex;align-items:center;gap:10px;background:linear-gradient(90deg,#eff6ff,#fff);border-bottom:2px solid #dbeafe;line-height:1.6;}
+.qh-icon{font-size:22px;}
+.qbody{padding:22px 28px 26px;display:flex;flex-direction:column;gap:16px;line-height:1.7;}
 .qcol{flex:1;min-width:200px;}
 .qst{font-size:12px;font-weight:800;letter-spacing:.3px;margin-bottom:10px;padding:5px 14px;border-radius:20px;display:inline-flex;align-items:center;gap:5px;}
 .st-b{background:#fef3c7;color:#b45309;border:1.5px solid #fcd34d;}
 .st-a{background:#d1fae5;color:#065f46;border:1.5px solid #6ee7b7;}
 .st-s{background:#dbeafe;color:#1d4ed8;border:1.5px solid #93c5fd;}
 
-table{width:100%;border-collapse:collapse;font-size:14px;}
-th{text-align:left;padding:6px 8px;color:#93c5fd;font-size:12px;font-weight:800;border-bottom:2px solid #eff6ff;}
-td{padding:7px 8px;color:#1e3a5f;border-bottom:1px solid #f0f6ff;font-size:14px;}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px;background:#fff;}
+th{text-align:left;padding:14px 18px;color:#1e293b;font-size:12px;font-weight:800;border-bottom:2px solid #e2e8f0;line-height:1.6;background:#f8fafc;}
+td{padding:12px 18px;color:#1e293b;border-bottom:1px solid #e2e8f0;font-size:14px;line-height:1.8;}
 tr:last-child td{border-bottom:none;}
-tr:hover td{background:#f8fbff;}
+tr:hover td{background:#f8fafc;}
 .dn{color:#b45309;font-weight:800;font-size:15px;}
 .dp{color:#059669;font-weight:800;font-size:15px;}
 .dz{color:#1d4ed8;font-weight:800;font-size:15px;}
@@ -1621,12 +1969,15 @@ function toggleSb() {
     document.body.classList.contains('sb-off') ? '☰' : '✕';
 }
 
-const RECORDS    = __DATA__;
+// 短鍵還原：序列化時用 A,B,C… 縮小檔案，載入時還原成中文鍵（下游渲染碼不變）
+const _KM={A:'公司代號',B:'公司名稱',C:'日期',D:'法說日',E:'通過到法說天數',F:'主旨',G:'召開法人說明會時間',H:'財報期別',I:'財報年度',J:'財報錨點',K:'前後',L:'距截止日交易日',M:'法說到截止交易日',N:'市場',O:'說明財報期',P:'法人說明會擇要訊息',Q:'法說時段',R:'早上法說日',S:'早上法說時間',T:'下午法說日',U:'下午法說時間',V:'法說清單',W:'即將法說日',X:'即將法說時間',Y:'即將法說地點',Z:'即將法說新'};
+function _rh(r){const o={};for(const k in r)o[_KM[k]||k]=r[k];const v=o['法說清單'];if(Array.isArray(v))o['法說清單']=v.map(s=>({日期:s.d,時間:s.t,時段:s.s,主辦:s.o,類型:s.y}));return o;}
+const RECORDS    = __DATA__.map(_rh);
 const FIRM_INFO  = __FIRM_INFO__;
 const INDUSTRIES = __INDUSTRIES__;
 const LARGE_CAP  = new Set(__LARGE_CAP__);
-const PENDING_IR  = __PENDING_IR__;
-const UPCOMING_IR = __UPCOMING_IR__;
+const PENDING_IR  = __PENDING_IR__.map(_rh);
+const UPCOMING_IR = __UPCOMING_IR__.map(_rh);
 const ETF981A         = __ETF981A__;
 const ETF981A_DATE    = "__ETF981A_DATE__";
 const ETF981A_METRICS = __ETF981A_METRICS__;
@@ -1962,9 +2313,19 @@ function selectYear(yr) {
             ? `<span class="${tdVal < 0 ? 'dp' : 'dn'}">${tdVal}</span>`
             : '<span style="color:#cbd5e1">—</span>';
           const 主旨 = r['主旨'] || '';
+          // 法說清單：每季（時段×主辦）各第一場
+          const _segC = s => s.時段 === '下午' ? '#0369a1' : (s.時段 === '早上' ? '#c2410c' : '#64748b');
+          const _brkC = b => b === '外資' ? '#7c3aed' : (b === '內資' ? '#0891b2' : (b === '自辦' ? '#16a34a' : '#94a3b8'));
+          const sessions = Array.isArray(r['法說清單']) ? r['法說清單'] : [];
+          const sessHTML = sessions.length
+            ? sessions.map(s => `<div style="font-size:11px;line-height:1.5;white-space:nowrap">
+                <span style="color:${_segC(s)};font-weight:700">${s.時段 || '—'}</span>
+                <span style="background:${_brkC(s.主辦)}22;color:${_brkC(s.主辦)};padding:0 4px;border-radius:3px;margin:0 3px;font-weight:700">${s.主辦 || ''}</span>
+                <span style="color:#0369a1;font-weight:700">${s.日期}</span> ${s.時間 || ''}</div>`).join('')
+            : (r['法說日'] ? `<span style="color:#0369a1;font-weight:700">${r['法說日']}</span>` : '<span style="color:#cbd5e1">—</span>');
           return `<tr>
             <td>${r['日期'] || ''}</td>
-            <td style="color:#0369a1;font-weight:700">${r['法說日'] || '<span style="color:#cbd5e1">—</span>'}</td>
+            <td>${sessHTML}</td>
             <td style="text-align:center">${calStr}</td>
             <td style="text-align:center">${tdStr}</td>
             <td>${r['財報錨點'] || ''}</td>
@@ -2029,7 +2390,7 @@ function weightDelta(code) {
   const d = Math.round((curr - prev) * 100) / 100;
   if (Math.abs(d) < 0.005) return '';
   const sign = d > 0 ? '+' : '';
-  const col  = d > 0 ? '#f87171' : '#4ade80';
+  const col  = d > 0 ? '#f87171' : '#06402b';
   return `<span style="color:${col};font-size:10px;font-weight:800;margin-left:3px">【${sign}${d.toFixed(2)}%】</span>`;
 }
 
@@ -2078,6 +2439,25 @@ function renderPending() {
   } else {
     _pBar.style.display = 'none';
   }
+  // 添加表格圖例
+  const pLegendHtml = `<div class="table-legend">
+    <div class="legend-item">
+      <span class="legend-text"><b style="color:#1e3a5f;font-weight:800">粗體名稱</b> = 有個股期</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot legend-orange"></span>
+      <span class="legend-text">橘色名稱 = 00981A 成分股</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot legend-blue"></span>
+      <span class="legend-text">藍色代號 = 大型股/金融</span>
+    </div>
+  </div>`;
+  const ptableParent = document.getElementById('ptable').parentElement;
+  const existingLegend = ptableParent.querySelector('.table-legend');
+  if (existingLegend) existingLegend.remove();
+  document.getElementById('ptable').insertAdjacentHTML('beforebegin', pLegendHtml);
+
   document.getElementById('ptbody').innerHTML = data.map(r => {
     const td = r['距截止日交易日'];
     const code = String(r['公司代號']||'').trim();
@@ -2088,14 +2468,11 @@ function renderPending() {
     const mktHtml = mkt ? `<span class="${mkt.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${mkt}</span>` : '';
     const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
     const weightHtml = is981a ? `<span class="etf981a-weight">權重：${ETF981A[code]}</span>` : '';
-    const codeStyle = isLarge ? 'color:#1d4ed8' : '';
-    const codeFw = !is981a && hasFut ? 'font-weight:900' : '';
-    const nameEl = (is981a && hasFut) ? `<b style="color:#f97316">${r['公司名稱']||''}</b>`
-                 : is981a             ? `<span style="color:#f97316">${r['公司名稱']||''}</span>`
-                 : hasFut             ? `<b>${r['公司名稱']||''}</b>`
-                 :                      (r['公司名稱']||'');
+    const codeStyle = isLarge ? 'color:#1d4ed8' : '';   // 藍色代號 = 大型股/金融
+    // 橘色名稱 = 成分股；粗體名稱 = 有個股期（可黑可橘，兩者獨立）
+    const nameEl = `<span style="${is981a?'color:#f97316;':''}${hasFut?'font-weight:800;':''}">${r['公司名稱']||''}</span>`;
     return `<tr>
-      <td><strong style="${[codeStyle,codeFw].filter(Boolean).join(';')}">${r['公司代號']||''}</strong></td>
+      <td><strong style="${codeStyle}">${r['公司代號']||''}</strong></td>
       <td>${nameEl}${weightHtml}</td>
       <td>${mktHtml}</td>
       <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
@@ -2161,6 +2538,25 @@ function renderUpcoming() {
   } else {
     _uBar.style.display = 'none';
   }
+  // 添加表格圖例
+  const uLegendHtml = `<div class="table-legend">
+    <div class="legend-item">
+      <span class="legend-text"><b style="color:#1e3a5f;font-weight:800">粗體名稱</b> = 有個股期</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot legend-orange"></span>
+      <span class="legend-text">橘色名稱 = 00981A 成分股</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot legend-blue"></span>
+      <span class="legend-text">藍色代號 = 大型股/金融</span>
+    </div>
+  </div>`;
+  const utableParent = document.getElementById('utable').parentElement;
+  const existingULegend = utableParent.querySelector('.table-legend');
+  if (existingULegend) existingULegend.remove();
+  document.getElementById('utable').insertAdjacentHTML('beforebegin', uLegendHtml);
+
   document.getElementById('utbody').innerHTML = data.map(r => {
     const code    = String(r['公司代號']||'').trim();
     const isLarge = LARGE_CAP.has(code);
@@ -2171,14 +2567,11 @@ function renderUpcoming() {
     const mktHtml = mkt ? `<span class="${mkt.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${mkt}</span>` : '';
     const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
     const weightHtml = is981a ? `<span class="etf981a-weight">權重：${ETF981A[code]}</span>` : '';
-    const codeStyleU = isLarge ? 'color:#1d4ed8' : '';
-    const codeFwU = !is981a && hasFut ? 'font-weight:900' : '';
-    const nameElU = (is981a && hasFut) ? `<b style="color:#f97316">${r['公司名稱']||''}</b>`
-                  : is981a             ? `<span style="color:#f97316">${r['公司名稱']||''}</span>`
-                  : hasFut             ? `<b>${r['公司名稱']||''}</b>`
-                  :                      (r['公司名稱']||'');
+    const codeStyleU = isLarge ? 'color:#1d4ed8' : '';   // 藍色代號 = 大型股/金融
+    // 橘色名稱 = 成分股；粗體名稱 = 有個股期（可黑可橘，兩者獨立）
+    const nameElU = `<span style="${is981a?'color:#f97316;':''}${hasFut?'font-weight:800;':''}">${r['公司名稱']||''}</span>`;
     return `<tr>
-      <td><strong style="${[codeStyleU,codeFwU].filter(Boolean).join(';')}">${r['公司代號']||''}</strong>${isNew ? '<span class="new-badge">NEW</span>' : ''}</td>
+      <td><strong style="${codeStyleU}">${r['公司代號']||''}</strong>${isNew ? '<span class="new-badge">NEW</span>' : ''}</td>
       <td>${nameElU}${weightHtml}</td>
       <td>${mktHtml}</td>
       <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
@@ -2250,12 +2643,31 @@ document.addEventListener('DOMContentLoaded', () => {
     if (diffItems.length > 0) {
       if (ETF981A_PREV_DATE) document.getElementById('etf981a-prev-date-label').textContent = `vs ${ETF981A_PREV_DATE}`;
       const tbody = document.getElementById('etf981a-diff-body');
+      // 添加成分股差異圖例
+      const diffLegendHtml = `<div style="margin-bottom:12px;padding:8px 0;display:flex;gap:20px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">
+          <span style="background:#fff5ee;border:1px solid #fed7aa;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
+          <span style="color:#6b8fc7">橘色 = 即將法說</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">
+          <span style="background:#e0f2fe;border:1px solid #a5d8ff;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
+          <span style="color:#6b8fc7">淺藍色 = 待法說</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">
+          <span style="background:#ecfdf5;border:1px solid #a7f3d0;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
+          <span style="color:#6b8fc7">綠色 = 歷史紀錄</span>
+        </div>
+      </div>`;
+      const existingDiffLegend = document.getElementById('etf981a-diff').querySelector('.etf-diff-legend');
+      if (!existingDiffLegend) {
+        document.getElementById('etf981a-diff-title').insertAdjacentHTML('afterend', `<div class="etf-diff-legend">${diffLegendHtml}</div>`);
+      }
       diffItems.forEach(({code, type, prevW, currW}) => {
         let color, bg;
-        if      (upcomingSet.has(code)) { color='#f97316'; bg='rgba(249,115,22,.08)'; }
-        else if (pendingSet.has(code))  { color='#fb923c'; bg='rgba(251,146,60,.08)'; }
-        else if (histSet.has(code))     { color='#60a5fa'; bg='rgba(96,165,250,.07)'; }
-        else                            { color='#94a3b8'; bg='transparent'; }
+        if      (upcomingSet.has(code)) { color='#f97316'; bg='#fff5ee'; }    // 即將法說 = 淺橘色背景
+        else if (pendingSet.has(code))  { color='#0369a1'; bg='#e0f2fe'; }    // 待法說 = 淺藍色背景
+        else if (histSet.has(code))     { color='#059669'; bg='#ecfdf5'; }    // 歷史紀錄 = 淡綠色背景
+        else                            { color='#1e293b'; bg='#fff'; }        // 其他 = 白色背景
         const prefix = type==='add' ? '＋' : type==='remove' ? '－' : '↕';
         const name = nameMap[code] || '';
         const tr = document.createElement('tr');
@@ -2268,21 +2680,21 @@ document.addEventListener('DOMContentLoaded', () => {
           if (!isNaN(pv) && !isNaN(cv)) {
             const d = Math.round((cv - pv) * 100) / 100;
             const sign = d > 0 ? '+' : '';
-            const dc = d > 0 ? '#f87171' : '#4ade80';
+            const dc = d > 0 ? '#f87171' : '#06402b';
             const arrow = d > 0 ? '↑' : '↓';
             deltaCell = `<td style="text-align:center;color:${dc};font-weight:800;font-size:12px;white-space:nowrap">${arrow} ${sign}${d.toFixed(2)}%</td>`;
           }
         } else if (type === 'add') {
           deltaCell = `<td style="text-align:center;color:#f87171;font-weight:800;font-size:12px">NEW</td>`;
         } else {
-          deltaCell = `<td style="text-align:center;color:#4ade80;font-weight:800;font-size:12px">OUT</td>`;
+          deltaCell = `<td style="text-align:center;color:#06402b;font-weight:800;font-size:12px">OUT</td>`;
         }
         tr.innerHTML = `<td class="diff-type" style="color:${color}">${prefix}</td>`
                      + `<td class="diff-code" style="color:${color}">${code}</td>`
-                     + `<td class="diff-name" style="color:#e2e8f0">${name}</td>`
-                     + `<td class="diff-w" style="color:#94a3b8">${type==='add'?'—':prevW}</td>`
+                     + `<td class="diff-name" style="color:${color}">${name}</td>`
+                     + `<td class="diff-w" style="color:${color}">${type==='add'?'—':prevW}</td>`
                      + deltaCell
-                     + `<td class="diff-w" style="color:${type==='remove'?'#94a3b8':color}">${type==='remove'?'—':currW}</td>`;
+                     + `<td class="diff-w" style="color:${color}">${type==='remove'?'—':currW}</td>`;
         tbody.appendChild(tr);
       });
       const btn = document.getElementById('etf981a-toggle');
