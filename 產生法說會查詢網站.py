@@ -679,6 +679,7 @@ def scrape_00981a_holdings():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
     wait   = WebDriverWait(driver, 15)
     holdings: dict = {}
+    shares: dict = {}           # {股票代號: 股數(int)}，張 = 股數/1000
     data_date = ''
     metrics: dict = {}
     try:
@@ -750,6 +751,10 @@ def scrape_00981a_holdings():
                 cells = [td.text.strip() for td in row.find_elements(By.TAG_NAME, 'td')]
                 if len(cells) >= 4 and cells[0]:
                     holdings[cells[0]] = cells[3]
+                    try:
+                        shares[cells[0]] = int(cells[2].replace(',', ''))   # cells[2]=股數
+                    except Exception:
+                        pass
             if holdings:
                 if not data_date:
                     data_date = f'{target.month:02d}/{target.day:02d}'
@@ -808,7 +813,7 @@ def scrape_00981a_holdings():
         print(f'  [00981A] 爬取失敗：{e}')
     finally:
         driver.quit()
-    return holdings, data_date, metrics
+    return holdings, data_date, metrics, shares
 
 
 def scrape_upcoming_ir():
@@ -1212,9 +1217,9 @@ def main():
 
     # ── 2. 啟動即時爬蟲：00981A 成分股 ──
     print('爬取 00981A 成分股…')
-    etf981a_holdings, etf981a_date, etf981a_metrics = {}, '', {}
+    etf981a_holdings, etf981a_date, etf981a_metrics, etf981a_shares = {}, '', {}, {}
     try:
-        etf981a_holdings, etf981a_date, etf981a_metrics = scrape_00981a_holdings()
+        etf981a_holdings, etf981a_date, etf981a_metrics, etf981a_shares = scrape_00981a_holdings()
         if etf981a_holdings:
             _full = etf981a_metrics.pop('_date_full', '') or _mmdd_to_full(etf981a_date)
             save_etf981a_daily(etf981a_holdings, _full, is_full_date=True)
@@ -1442,6 +1447,7 @@ def main():
             .replace('__PENDING_IR__', pending_ir_json)
             .replace('__UPCOMING_IR__', upcoming_ir_json)
             .replace('__ETF981A__', json.dumps(etf981a_holdings, ensure_ascii=False))
+            .replace('__ETF981A_SHARES__', json.dumps(etf981a_shares, ensure_ascii=False))
             .replace('__ETF981A_DATE__', etf981a_date)
             .replace('__ETF981A_METRICS__', json.dumps(etf981a_metrics, ensure_ascii=False))
             .replace('__ETF981A_PREV__', json.dumps(etf981a_prev, ensure_ascii=False))
@@ -1921,7 +1927,7 @@ tr:hover td{background:#f8fafc;}
         <div id="etf981a-diff-title">與前日差異 <span id="etf981a-prev-date-label" style="opacity:.65"></span></div>
         <table><thead><tr>
           <th style="text-align:center">變動</th>
-          <th>代號</th><th>名稱</th><th>前日權重</th><th style="text-align:center">差異</th><th>今日權重</th>
+          <th>代號</th><th>名稱</th><th>前日權重</th><th style="text-align:center">差異</th><th>今日權重</th><th style="text-align:right">張數(今日)</th>
         </tr></thead><tbody id="etf981a-diff-body"></tbody></table>
       </div>
     </div>
@@ -2034,6 +2040,7 @@ const LARGE_CAP  = new Set(__LARGE_CAP__);
 const PENDING_IR  = __PENDING_IR__.map(_rh);
 const UPCOMING_IR = __UPCOMING_IR__.map(_rh);
 const ETF981A         = __ETF981A__;
+const ETF981A_SHARES  = __ETF981A_SHARES__;   // {代號: 股數}，張 = 股數/1000
 const ETF981A_DATE    = "__ETF981A_DATE__";
 const ETF981A_METRICS = __ETF981A_METRICS__;
 const ETF981A_PREV      = __ETF981A_PREV__;
@@ -2764,12 +2771,18 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (type === 'remove') {
           deltaCell = `<td style="text-align:center;color:#16a34a;font-weight:800;font-size:12px">OUT</td>`;
         }
+        // 張數 = 今日股數 / 1000（剔除股OUT沒有今日持股 → —）
+        const shr = ETF981A_SHARES[code];
+        const lotCell = (type !== 'remove' && shr != null)
+          ? `<td style="text-align:right;color:${color};font-variant-numeric:tabular-nums">${(shr/1000).toLocaleString('en-US',{maximumFractionDigits:3})} 張</td>`
+          : `<td style="text-align:right;color:#cbd5e1">—</td>`;
         tr.innerHTML = `<td class="diff-type" style="color:${color}">${prefix}</td>`
                      + `<td class="diff-code" style="color:${color}">${code}</td>`
                      + `<td class="diff-name" style="color:${color}">${name}</td>`
                      + `<td class="diff-w" style="color:${color}">${type==='add'?'—':prevW}</td>`
                      + deltaCell
-                     + `<td class="diff-w" style="color:${color}">${type==='remove'?'—':currW}</td>`;
+                     + `<td class="diff-w" style="color:${color}">${type==='remove'?'—':currW}</td>`
+                     + lotCell;
         tbody.appendChild(tr);
       });
       const btn = document.getElementById('etf981a-toggle');
