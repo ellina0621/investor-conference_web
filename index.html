@@ -440,10 +440,10 @@ tr:hover td{background:#f8fafc;}
         </div>
       </div>
       <div id="etf981a-toggle" onclick="toggleEtfDiff()" style="display:none">
-        📋 成分股差異 <span id="etf981a-diff-cnt"></span><span class="arrow">▾</span>
+        📋 成分股一覽 <span id="etf981a-diff-cnt"></span><span class="arrow">▾</span>
       </div>
       <div id="etf981a-diff">
-        <div id="etf981a-diff-title">與前日成分股差異 <span id="etf981a-prev-date-label" style="opacity:.65"></span></div>
+        <div id="etf981a-diff-title">與前日差異 <span id="etf981a-prev-date-label" style="opacity:.65"></span></div>
         <table><thead><tr>
           <th style="text-align:center">變動</th>
           <th>代號</th><th>名稱</th><th>前日權重</th><th style="text-align:center">差異</th><th>今日權重</th>
@@ -1231,8 +1231,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (Object.prototype.hasOwnProperty.call(ETF981A_PREV, code) && ETF981A_PREV[code] !== ETF981A[code])
         diffItems.push({code, type:'change', prevW:ETF981A_PREV[code], currW:ETF981A[code]});
     }
+    // 無變動（今日仍持有、權重與前日相同）→ 也全部列出，依今日權重由大到小
+    const sameItems = [];
+    for (const code of Object.keys(ETF981A)) {
+      if (Object.prototype.hasOwnProperty.call(ETF981A_PREV, code) && ETF981A_PREV[code] === ETF981A[code])
+        sameItems.push({code, type:'same', prevW:ETF981A_PREV[code], currW:ETF981A[code]});
+    }
+    sameItems.sort((a, b) => parseFloat((b.currW||'').replace('%','')) - parseFloat((a.currW||'').replace('%','')));
+    const allItems = diffItems.concat(sameItems);   // 變動在前、無變動在後
 
-    if (diffItems.length > 0) {
+    if (allItems.length > 0) {
       if (ETF981A_PREV_DATE) document.getElementById('etf981a-prev-date-label').textContent = `vs ${ETF981A_PREV_DATE}`;
       const tbody = document.getElementById('etf981a-diff-body');
       // 添加成分股差異圖例
@@ -1254,18 +1262,18 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!existingDiffLegend) {
         document.getElementById('etf981a-diff-title').insertAdjacentHTML('afterend', `<div class="etf-diff-legend">${diffLegendHtml}</div>`);
       }
-      diffItems.forEach(({code, type, prevW, currW}) => {
+      allItems.forEach(({code, type, prevW, currW}) => {
         let color, bg;
         if      (upcomingSet.has(code)) { color='#f97316'; bg='#fff5ee'; }    // 即將法說 = 淺橘色背景
         else if (pendingSet.has(code))  { color='#0369a1'; bg='#e0f2fe'; }    // 待法說 = 淺藍色背景
         else if (histSet.has(code))     { color='#059669'; bg='#ecfdf5'; }    // 歷史紀錄 = 淡綠色背景
         else                            { color='#1e293b'; bg='#fff'; }        // 其他 = 白色背景
-        const prefix = type==='add' ? '＋' : type==='remove' ? '－' : '↕';
+        const prefix = type==='add' ? '＋' : type==='remove' ? '－' : type==='change' ? '↕' : '＝';
         const name = nameMap[code] || '';
         const tr = document.createElement('tr');
         tr.style.background = bg;
         // 計算差異欄
-        let deltaCell = '<td style="text-align:center;color:#475569">—</td>';
+        let deltaCell = '<td style="text-align:center;color:#cbd5e1">—</td>';
         if (type === 'change') {
           const pv = parseFloat((prevW||'').replace('%',''));
           const cv = parseFloat((currW||'').replace('%',''));
@@ -1278,7 +1286,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         } else if (type === 'add') {
           deltaCell = `<td style="text-align:center;color:#f87171;font-weight:800;font-size:12px">NEW</td>`;
-        } else {
+        } else if (type === 'remove') {
           deltaCell = `<td style="text-align:center;color:#16a34a;font-weight:800;font-size:12px">OUT</td>`;
         }
         tr.innerHTML = `<td class="diff-type" style="color:${color}">${prefix}</td>`
@@ -1291,7 +1299,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const btn = document.getElementById('etf981a-toggle');
       btn.style.display = 'block';
-      document.getElementById('etf981a-diff-cnt').textContent = `（${diffItems.length} 筆）`;
+      document.getElementById('etf981a-diff-cnt').textContent = `（${diffItems.length} 筆變動 / 共 ${Object.keys(ETF981A).length} 檔）`;
     }
   }
 });
