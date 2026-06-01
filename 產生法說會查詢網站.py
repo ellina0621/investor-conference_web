@@ -283,6 +283,7 @@ class MopsConferenceScraper:
         'detail':   ['法人說明會擇要訊息', '擇要訊息', '說明', '備註'],
     }
     VIDEO_LINK_HEADERS  = ['影音連結資訊', '影音連結', '視訊連結', '連結資訊']
+    WEBSITE_IR_HEADERS  = ['公司網站是否提供法人說明會相關資訊', '公司網站是否提供', '網站是否提供法人說明會']
     OTHER_INFO_HEADERS  = ['其他應敘明事項', '其他應敘述事項', '其他事項', '應敘明事項', '應敘述事項', '備註說明']
     _URL_RE = re.compile(r'https?://[^\s<>"\'\)]+')
 
@@ -457,7 +458,18 @@ class MopsConferenceScraper:
                 if i >= len(cells):
                     break
                 ci_list = [i + n_extra, i] if n_extra > 0 and (i + n_extra) < len(cells) else [i]
-                if any(kw in header for kw in self.VIDEO_LINK_HEADERS):
+                if any(kw in header for kw in self.WEBSITE_IR_HEADERS):
+                    for ci in ci_list:
+                        cell = cells[ci]
+                        urls = [a['href'].strip() for a in cell.find_all('a', href=True) if a['href'].strip().startswith('http')]
+                        if not urls:
+                            urls = self._URL_RE.findall(cell.get_text(' ', strip=True))
+                        if urls:
+                            ev['website_ir'] = urls[0]; break
+                        txt = cell.get_text(' ', strip=True).strip().rstrip('。.')
+                        if txt and txt not in ('', '無', '-', '無資料', 'N/A', '否'):
+                            ev['website_ir'] = txt; break
+                elif any(kw in header for kw in self.VIDEO_LINK_HEADERS):
                     for ci in ci_list:
                         cell = cells[ci]
                         urls = [a['href'].strip() for a in cell.find_all('a', href=True) if a['href'].strip().startswith('http')]
@@ -1313,7 +1325,7 @@ def main():
     def _slim_sessions(lst):
         if not isinstance(lst, list): return []
         return [{'d': s.get('日期'), 't': s.get('時間'), 's': s.get('時段'),
-                 'o': s.get('主辦'), 'y': s.get('類型')} for s in lst]
+                 'o': s.get('主辦'), 'y': s.get('類型'), 'm': s.get('擇要')} for s in lst]
     out['法說清單'] = df['法說清單'].apply(_slim_sessions) if '法說清單' in df.columns else [[] for _ in range(len(df))]
 
     print(f'  載入 {len(out):,} 筆')
@@ -1401,6 +1413,10 @@ def main():
         pending_has_ir_df['即將法說時間'] = pending_has_ir_df['召開法人說明會時間'].fillna('')
         _evs = [_up_match(c, d) for c, d in zip(pending_has_ir_df['公司代號'], pending_has_ir_df['法說日'])]
         pending_has_ir_df['即將法說地點'] = [ev.get('location', '') for ev in _evs]
+        # 公司網站法說資訊 / 影音連結資訊（來自 MOPS）；無資料寫「無」
+        pending_has_ir_df['即將法說網站'] = [str(ev.get('website_ir', '') or '無') for ev in _evs]
+        pending_has_ir_df['即將法說影音'] = [
+            (' '.join(ev.get('video_links', [])) if ev.get('video_links') else '無') for ev in _evs]
         pending_has_ir_df['即將法說新']   = [
             f"{c}|{ev.get('date','')}|{ev.get('time','')}" in _new_ev_keys
             for c, ev in zip(pending_has_ir_df['公司代號'], _evs)]
@@ -1937,6 +1953,8 @@ tr:hover td{background:#f8fafc;}
             <th data-col="即將法說日" onclick="sortU('即將法說日')">即將法說日</th>
             <th data-col="即將法說時間" onclick="sortU('即將法說時間')">時間</th>
             <th>地點</th>
+            <th>公司網站法說資訊</th>
+            <th>影音連結</th>
             <th>公告主旨</th>
           </tr></thead>
           <tbody id="utbody"></tbody>
@@ -1996,7 +2014,15 @@ function toggleSb() {
 
 // 短鍵還原：序列化時用 A,B,C… 縮小檔案，載入時還原成中文鍵（下游渲染碼不變）
 const _KM={A:'公司代號',B:'公司名稱',C:'日期',D:'法說日',E:'通過到法說天數',F:'主旨',G:'召開法人說明會時間',H:'財報期別',I:'財報年度',J:'財報錨點',K:'前後',L:'距截止日交易日',M:'法說到截止交易日',N:'市場',O:'說明財報期',P:'法人說明會擇要訊息',Q:'法說時段',R:'早上法說日',S:'早上法說時間',T:'下午法說日',U:'下午法說時間',V:'法說清單',W:'即將法說日',X:'即將法說時間',Y:'即將法說地點',Z:'即將法說新'};
-function _rh(r){const o={};for(const k in r)o[_KM[k]||k]=r[k];const v=o['法說清單'];if(Array.isArray(v))o['法說清單']=v.map(s=>({日期:s.d,時間:s.t,時段:s.s,主辦:s.o,類型:s.y}));return o;}
+function _rh(r){const o={};for(const k in r)o[_KM[k]||k]=r[k];const v=o['法說清單'];if(Array.isArray(v))o['法說清單']=v.map(s=>({日期:s.d,時間:s.t,時段:s.s,主辦:s.o,類型:s.y,擇要:s.m}));return o;}
+// 即將法說的「公司網站法說資訊／影音連結」：URL 轉連結，無資料顯示灰字「無」
+function _irLink(v){
+  v = (v == null ? '' : String(v)).trim();
+  if (!v || v === '無') return '<span style="color:#cbd5e1">無</span>';
+  const urls = v.match(/https?:\/\/[^\s]+/g);
+  if (!urls) return v;
+  return urls.map(u => `<a href="${u}" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:underline">${u.length>40?u.slice(0,40)+'…':u}</a>`).join('<br>');
+}
 const RECORDS    = __DATA__.map(_rh);
 const FIRM_INFO  = __FIRM_INFO__;
 const INDUSTRIES = __INDUSTRIES__;
@@ -2348,6 +2374,16 @@ function selectYear(yr) {
                 <span style="background:${_brkC(s.主辦)}22;color:${_brkC(s.主辦)};padding:0 4px;border-radius:3px;margin:0 3px;font-weight:700">${s.主辦 || ''}</span>
                 <span style="color:#0369a1;font-weight:700">${s.日期}</span> ${s.時間 || ''}</div>`).join('')
             : (r['法說日'] ? `<span style="color:#0369a1;font-weight:700">${r['法說日']}</span>` : '<span style="color:#cbd5e1">—</span>');
+          // 擇要訊息：有兩場時逐場列出（各自標時段/主辦），否則用 primary
+          const memoHTML = (sessions.length && sessions.some(s => s.擇要))
+            ? sessions.map(s => {
+                const mm = s.擇要 || '';
+                if (!mm) return '';
+                return `<div style="margin-bottom:5px;padding-bottom:4px;border-bottom:1px dashed #e2e8f0">
+                  <span style="color:${_segC(s)};font-weight:700">${s.時段 || ''}</span>
+                  <span style="background:${_brkC(s.主辦)}22;color:${_brkC(s.主辦)};padding:0 4px;border-radius:3px;margin:0 3px;font-weight:700">${s.主辦 || ''}</span>${mm}</div>`;
+              }).filter(Boolean).join('')
+            : memo;
           return `<tr>
             <td>${r['日期'] || ''}</td>
             <td>${sessHTML}</td>
@@ -2357,7 +2393,7 @@ function selectYear(yr) {
             <td>${mktTag(r['市場'])}</td>
             <td>${period ? `<span class="period-tag">${period}</span>` : ''}</td>
             <td class="memo-cell" title="${主旨.replace(/"/g,'&quot;')}">${主旨}</td>
-            <td class="memo-cell">${memo}</td>
+            <td class="memo-cell">${memoHTML}</td>
           </tr>`;
         }).join('')}
       </table>`;
@@ -2605,6 +2641,8 @@ function renderUpcoming() {
       <td style="color:#1d4ed8;font-weight:800">${r['即將法說日']||'—'}</td>
       <td>${r['即將法說時間']||'—'}</td>
       <td style="font-size:11px;max-width:130px;word-break:break-word">${r['即將法說地點']||'—'}</td>
+      <td style="font-size:11px;max-width:150px;word-break:break-all">${_irLink(r['即將法說網站'])}</td>
+      <td style="font-size:11px;max-width:150px;word-break:break-all">${_irLink(r['即將法說影音'])}</td>
       <td class="memo-cell" title="${subj}">${r['主旨']||''}</td>
     </tr>`;
   }).join('');
