@@ -33,7 +33,7 @@ OUT_HTML  = os.path.join(BASE, 'index.html')
 
 LARGE_CAP_THRESHOLD = 10_000_000_000  # 100億元
 PKL_PATH            = os.path.join(BASE, '財報_df.pkl')
-UPCOMING_IR_CACHE   = os.path.join(BASE, 'upcoming_ir_cache.json')
+IR_EVENTS_JSON      = os.path.join(BASE, '法說會事件庫.json')   # 累積所有爬到的法說事件（增量、永不覆寫；供新爬偵測+歷史分段更新）
 MOPS_IR_URL         = 'https://mopsov.twse.com.tw/mops/web/t100sb02_1'
 ETF981A_URL         = 'https://www.ezmoney.com.tw/ETF/Transaction/PCF?fundCode=49YTW'
 ETF981A_CSV         = os.path.join(BASE, '00981A_投組.csv')
@@ -800,46 +800,44 @@ def scrape_00981a_holdings():
 
 
 def scrape_upcoming_ir():
-    """爬取近期法說會，更新快取，回傳 (全部未來事件, 新event keys集合)"""
+    """爬當前視窗法說會，併入累積事件庫(法說會事件庫.json)；庫永不覆寫、只增量合併。
+    回傳 (事件庫全部事件, 本次新爬到的 keys)。供分析(含當月已過去場次)與新爬偵測使用。"""
     today_str = date.today().strftime('%Y/%m/%d')
 
-    # 載入上次快取
-    cached_keys: set = set()
-    if os.path.exists(UPCOMING_IR_CACHE):
+    # 載入既有事件庫
+    store_map: dict = {}
+    if os.path.exists(IR_EVENTS_JSON):
         try:
-            with open(UPCOMING_IR_CACHE, 'r', encoding='utf-8') as f:
-                cached = json.load(f)
-            cached_keys = {
-                f"{e.get('co_code','')}|{e.get('date','')}|{e.get('time','')}"
-                for e in cached
-            }
+            with open(IR_EVENTS_JSON, 'r', encoding='utf-8') as f:
+                for e in json.load(f):
+                    store_map[(str(e.get('co_code', '')), e.get('date', ''), e.get('time', ''))] = e
         except Exception:
             pass
+    _before = len(store_map)
 
     scraper = MopsConferenceScraper()
     raw = scraper.scrape()
-    raw.sort(key=lambda e: (e.get('date', ''), e.get('time', '')))
-    # 注意：回傳「全部」(含當月已過去的場次，如信驊5/28)供分析使用；
-    #       「即將法說」面板由 main() 依分析法說日 >= 今天 自行過濾。
 
-    # 記錄哪些是新的（與上次快取比較）
+    # 合併：庫裡沒有的 = 本次新爬到；其餘更新內容
     new_keys: set = set()
     for ev in raw:
-        k = f"{ev.get('co_code','')}|{ev.get('date','')}|{ev.get('time','')}"
-        if k not in cached_keys:
-            new_keys.add(k)
+        key = (str(ev.get('co_code', '')), ev.get('date', ''), ev.get('time', ''))
+        if key not in store_map:
+            new_keys.add(f"{key[0]}|{key[1]}|{key[2]}")
+        store_map[key] = ev
 
-    _n_future = sum(1 for ev in raw if ev.get('date', '') >= today_str)
-    print(f'  近期法說：{len(raw)} 筆（未來 {_n_future}），新增：{len(new_keys)} 筆')
+    merged = sorted(store_map.values(), key=lambda e: (e.get('date', ''), e.get('time', '')))
 
-    # 存快取（下次比較用）
+    # 存回事件庫（增量累積）
     try:
-        with open(UPCOMING_IR_CACHE, 'w', encoding='utf-8') as f:
-            json.dump(raw, f, ensure_ascii=False, indent=2)
+        with open(IR_EVENTS_JSON, 'w', encoding='utf-8') as f:
+            json.dump(merged, f, ensure_ascii=False, indent=1)
     except Exception as e:
-        print(f'  [警告] 快取儲存失敗：{e}')
+        print(f'  [警告] 事件庫儲存失敗：{e}')
 
-    return raw, new_keys
+    _n_future = sum(1 for e in merged if e.get('date', '') >= today_str)
+    print(f'  法說事件庫：{len(merged):,} 筆（庫存 {_before:,} → 本次爬 {len(raw)}、新增 {len(new_keys)}、未來 {_n_future}）')
+    return merged, new_keys
 
 
 # ════════════════════════════════════════════════════════════════════
