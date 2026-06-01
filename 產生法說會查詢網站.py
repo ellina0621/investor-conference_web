@@ -1064,9 +1064,13 @@ _OVERSEAS_KW = ('香港', '新加坡', '海外', '美國', '紐約', '倫敦', '
                 'Hong Kong', 'HongKong', 'Singapore', 'New York', 'London', 'Tokyo', 'Seoul',
                 'Shanghai', 'Boston', 'San Francisco')
 
+# 台外合資但在台註冊的本土券商：名稱含外資母公司(如「大和」)但屬內資，需先於外資判定
+_DOMESTIC_JV_KW = ('大和國泰',)
+
 def _broker_type(text, location=''):
     if any(kw in str(location or '') for kw in _OVERSEAS_KW): return '外資'   # 海外舉辦(roadshow)視為外資
     t = str(text or '')
+    if any(kw in t for kw in _DOMESTIC_JV_KW): return '內資'   # 合資本土券商(大和國泰)先於「大和」外資判定
     if any(kw in t for kw in _FOREIGN_KW): return '外資'
     if any(kw in t for kw in _DOMESTIC_KW): return '內資'
     if '受邀' in t or '邀請' in t: return '其他'        # 受邀但券商名未辨識
