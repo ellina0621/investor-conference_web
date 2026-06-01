@@ -1583,11 +1583,11 @@ body.sb-off #main{padding-left:76px;}
 .etf-metric .value{font-size:20px;font-weight:900;line-height:1;color:#fff;}
 .etf-metric .unit{font-size:10px;color:#93c5fd;font-weight:700;margin-top:3px;}
 .etf-metric .value.pos{color:#f87171;}
-.etf-metric .value.neg{color:#06402b;}
+.etf-metric .value.neg{color:#16a34a;}
 .etf-metric .value.neutral{color:#fff;}
 .etf-metric .delta{font-size:10px;font-weight:800;margin-top:2px;line-height:1;}
 .etf-metric .delta.up{color:#f87171;}
-.etf-metric .delta.dn{color:#06402b;}
+.etf-metric .delta.dn{color:#16a34a;}
 #etf981a-toggle{margin-top:12px;text-align:center;cursor:pointer;
   font-size:11px;color:#2563eb;font-weight:700;letter-spacing:.3px;
   padding:6px;border-radius:8px;border:1px solid #dbeafe;
@@ -2451,7 +2451,7 @@ function weightDelta(code) {
   const d = Math.round((curr - prev) * 100) / 100;
   if (Math.abs(d) < 0.005) return '';
   const sign = d > 0 ? '+' : '';
-  const col  = d > 0 ? '#f87171' : '#06402b';
+  const col  = d > 0 ? '#f87171' : '#16a34a';
   return `<span style="color:${col};font-size:10px;font-weight:800;margin-left:3px">【${sign}${d.toFixed(2)}%】</span>`;
 }
 
@@ -2743,14 +2743,14 @@ document.addEventListener('DOMContentLoaded', () => {
           if (!isNaN(pv) && !isNaN(cv)) {
             const d = Math.round((cv - pv) * 100) / 100;
             const sign = d > 0 ? '+' : '';
-            const dc = d > 0 ? '#f87171' : '#06402b';
+            const dc = d > 0 ? '#f87171' : '#16a34a';
             const arrow = d > 0 ? '↑' : '↓';
             deltaCell = `<td style="text-align:center;color:${dc};font-weight:800;font-size:12px;white-space:nowrap">${arrow} ${sign}${d.toFixed(2)}%</td>`;
           }
         } else if (type === 'add') {
           deltaCell = `<td style="text-align:center;color:#f87171;font-weight:800;font-size:12px">NEW</td>`;
         } else {
-          deltaCell = `<td style="text-align:center;color:#06402b;font-weight:800;font-size:12px">OUT</td>`;
+          deltaCell = `<td style="text-align:center;color:#16a34a;font-weight:800;font-size:12px">OUT</td>`;
         }
         tr.innerHTML = `<td class="diff-type" style="color:${color}">${prefix}</td>`
                      + `<td class="diff-code" style="color:${color}">${code}</td>`
