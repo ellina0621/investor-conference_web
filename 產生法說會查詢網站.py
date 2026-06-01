@@ -309,8 +309,8 @@ class MopsConferenceScraper:
     def scrape(self) -> list:
         today = datetime.today()
         months = []
-        for i in range(3):
-            total = today.month - 1 + i
+        for i in range(5):                       # 前2月 ~ 後2月，涵蓋整季法說(含當月已過去場次)
+            total = today.month - 3 + i
             months.append((today.year + total // 12, total % 12 + 1))
         self._init_driver()
         all_events, seen = [], set()
@@ -818,28 +818,28 @@ def scrape_upcoming_ir():
 
     scraper = MopsConferenceScraper()
     raw = scraper.scrape()
+    raw.sort(key=lambda e: (e.get('date', ''), e.get('time', '')))
+    # 注意：回傳「全部」(含當月已過去的場次，如信驊5/28)供分析使用；
+    #       「即將法說」面板由 main() 依分析法說日 >= 今天 自行過濾。
 
-    # 只保留今天以後
-    upcoming = [ev for ev in raw if ev.get('date', '') >= today_str]
-    upcoming.sort(key=lambda e: (e.get('date', ''), e.get('time', '')))
-
-    # 記錄哪些是新的
+    # 記錄哪些是新的（與上次快取比較）
     new_keys: set = set()
-    for ev in upcoming:
+    for ev in raw:
         k = f"{ev.get('co_code','')}|{ev.get('date','')}|{ev.get('time','')}"
         if k not in cached_keys:
             new_keys.add(k)
 
-    print(f'  近期法說：{len(upcoming)} 筆，新增：{len(new_keys)} 筆')
+    _n_future = sum(1 for ev in raw if ev.get('date', '') >= today_str)
+    print(f'  近期法說：{len(raw)} 筆（未來 {_n_future}），新增：{len(new_keys)} 筆')
 
     # 存快取（下次比較用）
     try:
         with open(UPCOMING_IR_CACHE, 'w', encoding='utf-8') as f:
-            json.dump(upcoming, f, ensure_ascii=False, indent=2)
+            json.dump(raw, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f'  [警告] 快取儲存失敗：{e}')
 
-    return upcoming, new_keys
+    return raw, new_keys
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -919,8 +919,11 @@ def get_deadline(period, fy, large):
     return None
 
 def _an_roc_to_date(s):
+    # 取第一個日期；含 roadshow 區間「115/03/02 至 115/03/05」也只取起始日
+    mt = re.search(r'(\d{2,3})/(\d{1,2})/(\d{1,2})', str(s))
+    if not mt: return None
     try:
-        y, m, d = map(int, str(s).split('/')[:3]); return date(y + 1911, m, d)
+        return date(int(mt.group(1)) + 1911, int(mt.group(2)), int(mt.group(3)))
     except Exception:
         return None
 
@@ -1019,7 +1022,8 @@ def load_ir_pool(upcoming_all):
     inv['法說日'] = inv['召開法人說明會日期'].apply(_an_roc_to_date)
     inv['時間'] = inv['召開法人說明會時間'].astype(str).apply(_ir_norm_time)
     inv['擇要'] = inv['法人說明會擇要訊息'] if '法人說明會擇要訊息' in inv.columns else ''
-    hist = inv[['代號', '法說日', '時間', '擇要']].dropna(subset=['法說日'])
+    inv['地點'] = inv['召開法人說明會地點'] if '召開法人說明會地點' in inv.columns else ''
+    hist = inv[['代號', '法說日', '時間', '擇要', '地點']].dropna(subset=['法說日'])
     up_rows = []
     for ev in (upcoming_all or []):
         code = str(ev.get('co_code', '')).strip()
@@ -1027,8 +1031,8 @@ def load_ir_pool(upcoming_all):
         if code and d:
             up_rows.append({'代號': code, '法說日': d,
                             '時間': _ir_norm_time(str(ev.get('time', ''))),
-                            '擇要': ev.get('detail', '')})
-    up = pd.DataFrame(up_rows, columns=['代號', '法說日', '時間', '擇要'])
+                            '擇要': ev.get('detail', ''), '地點': ev.get('location', '')})
+    up = pd.DataFrame(up_rows, columns=['代號', '法說日', '時間', '擇要', '地點'])
     pool = pd.concat([hist, up], ignore_index=True)
     pool = pool.drop_duplicates(subset=['代號', '法說日', '時間'])
     pool['擇要報告期'] = pool.apply(lambda r: extract_reported_periods(r['擇要'], r['法說日']), axis=1)
@@ -1045,7 +1049,13 @@ _DOMESTIC_KW = ('凱基', 'KGI', '元大', '永豐', '群益', '富邦', '國泰
                 '台新', '兆豐', '中國信託', '中信', '第一金', '日盛', '宏遠', '康和', '大昌', '致和',
                 '福邦', '犇亞', '元富', '玉山', '新光', '德信', '大慶', '美好', '亞東', '陽信', '國票', '永昌')
 
-def _broker_type(text):
+_OVERSEAS_KW = ('香港', '新加坡', '海外', '美國', '紐約', '倫敦', '東京', '日本', '韓國', '首爾',
+                '上海', '深圳', '北京', '波士頓', '舊金山', '法蘭克福', '瑞士', '英國',
+                'Hong Kong', 'HongKong', 'Singapore', 'New York', 'London', 'Tokyo', 'Seoul',
+                'Shanghai', 'Boston', 'San Francisco')
+
+def _broker_type(text, location=''):
+    if any(kw in str(location or '') for kw in _OVERSEAS_KW): return '外資'   # 海外舉辦(roadshow)視為外資
     t = str(text or '')
     if any(kw in t for kw in _FOREIGN_KW): return '外資'
     if any(kw in t for kw in _DOMESTIC_KW): return '內資'
@@ -1092,26 +1102,26 @@ def build_report_df(upcoming_all, large_cap_int):
                 elif jn is not None and (q_pass[jn] - T).days <= 90: tgt, typ = jn, '前置法說'
                 else: tgt = None
                 if tgt is not None:
-                    bucket[tgt].append((T, ir['時間'], ir['擇要'], typ))
+                    bucket[tgt].append((T, ir['時間'], ir['擇要'], ir['地點'], typ))
         def _rank(c):
             tm = _an_time_min(c[1])
             return (c[0], tm if tm is not None else 9999)
         def _mk(c):
-            T, tm, detail, typ = c
+            T, tm, detail, location, typ = c
             return {'日期': T.date().isoformat(), '時間': tm, '時段': _seg_of(_an_time_min(tm)),
-                    '主辦': _broker_type(detail), '類型': typ,
+                    '主辦': _broker_type(detail, location), '類型': typ,
                     '擇要': (str(detail) if detail is not None else '')}
         for pos in range(len(q)):
             idx = q.loc[pos, 'index']
             cands = sorted(bucket[pos], key=_rank)
             # 主場 = 第一場「非外資」；整季只有外資時退用第一場
-            non_foreign = [c for c in cands if _broker_type(c[2]) != '外資']
+            non_foreign = [c for c in cands if _broker_type(c[2], c[3]) != '外資']
             main_c = non_foreign[0] if non_foreign else (cands[0] if cands else None)
             sessions = []
             if main_c is not None:
                 _mr = _rank(main_c)
                 # 領先外資：主場之前才有的第一場外資（早上外資先開、之後才有非外資）
-                lead_c = next((c for c in cands if _broker_type(c[2]) == '外資' and _rank(c) < _mr), None)
+                lead_c = next((c for c in cands if _broker_type(c[2], c[3]) == '外資' and _rank(c) < _mr), None)
                 if lead_c is not None: sessions.append(_mk(lead_c))
                 sessions.append(_mk(main_c))
             morn = [s for s in sessions if s['時段'] == '早上']
