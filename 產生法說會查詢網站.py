@@ -1629,29 +1629,34 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>📊 法說會查詢</title>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<title>法說會查詢</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
 <style>
 :root{
-  --font:-apple-system,BlinkMacSystemFont,'Trebuchet MS',Roboto,'Helvetica Neue',Arial,'PingFang TC','Microsoft JhengHei',sans-serif;
+  --font:'Trebuchet MS','Noto Sans TC',-apple-system,BlinkMacSystemFont,Roboto,Ubuntu,'Segoe UI','PingFang TC','Microsoft JhengHei',sans-serif;
   --bg:#131722;        /* app background */
   --bg2:#0c0e15;       /* sidebar / overlays */
   --surface:#1e222d;   /* cards & panels */
   --surface2:#252934;  /* raised / hover */
   --border:#2a2e39;
   --border2:#363a45;
-  --text:#d1d4dc;      /* primary text */
+  --text:#e8eaed;      /* primary text（更白）*/
   --text-strong:#ffffff;
-  --muted:#787b86;     /* secondary text */
-  --accent:#2962ff;    /* TradingView blue */
+  --muted:#9aa1ad;     /* secondary text（亮一點，不要太灰）*/
+  --accent:#2962ff;    /* TradingView 主藍（連結/主要按鈕）*/
   --accent-h:#1e53e5;
-  --accent-soft:rgba(41,98,255,.15);
+  --accent-light:#5b9cff; /* 較柔的藍：用在徽章/次要強調，不要那麼濃 */
+  --accent-soft:rgba(41,98,255,.16);
   --rise:#f7525f;      /* 漲/正 = 紅 (台股慣例) */
   --fall:#26a69a;      /* 跌/負 = 綠 */
   --amber:#ff9800;     /* 權證/ETF 高亮 */
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:var(--font);display:flex;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);}
+/* 線性圖示基底（行內隨字級縮放）*/
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-.14em;flex-shrink:0;stroke:currentColor;fill:none;}
+body{font-family:var(--font);display:flex;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);font-variant-numeric:tabular-nums;}
 
 /* ── SIDEBAR ── */
 #sb{
@@ -1664,13 +1669,13 @@ body{font-family:var(--font);display:flex;height:100vh;overflow:hidden;backgroun
 }
 body.sb-off #sb{width:0;min-width:0;border-right:none;}
 #sb-top{display:flex;align-items:center;padding:16px 14px 4px;gap:8px;flex-shrink:0;}
-#sb-logo{font-size:19px;font-weight:800;color:var(--text-strong);letter-spacing:-.3px;white-space:nowrap;overflow:hidden;}
+#sb-logo{font-size:19px;font-weight:700;color:var(--text-strong);letter-spacing:-.3px;white-space:nowrap;overflow:hidden;}
 #sb-logo span{font-size:11px;font-weight:600;color:var(--muted);display:block;margin-top:2px;}
 #srch{
   margin:8px 14px 4px;padding:10px 14px;
   border:1px solid var(--border);border-radius:8px;
-  background:var(--surface);color:var(--text);font-size:15px;font-family:var(--font);
-  outline:none;width:calc(100% - 28px);transition:.2s;flex-shrink:0;
+  background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa1ad' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 14px center;color:var(--text);font-size:15px;font-family:var(--font);
+  outline:none;width:calc(100% - 28px);transition:.2s;flex-shrink:0;padding-left:40px;
 }
 #srch:focus{border-color:var(--accent);background:var(--surface);}
 #srch::placeholder{color:var(--muted);}
@@ -1722,23 +1727,23 @@ body:not(.sb-off) #sb-toggle{left:246px;}
 .ci.active .ci-name{color:var(--text);}
 
 /* ── MAIN ── */
-#main{flex:1;overflow-y:auto;padding:48px 56px;transition:padding .25s;}
+#main{flex:1;overflow-y:auto;padding:44px 64px;transition:padding .25s;}
 body.sb-off #main{padding-left:76px;}
 #main::-webkit-scrollbar{width:8px;}
 #main::-webkit-scrollbar-thumb{background:var(--border2);border-radius:8px;}
 
 /* home grid */
 #home{display:block;}
-#home-title{font-size:28px;font-weight:800;color:var(--text-strong);margin-bottom:10px;line-height:1.4;}
-#home-sub{font-size:15px;color:var(--muted);font-weight:500;margin-bottom:32px;line-height:1.6;}
+#home-title{font-size:32px;font-weight:900;color:var(--text-strong);margin-bottom:10px;line-height:1.3;letter-spacing:-.3px;}
+#home-sub{font-size:15px;color:var(--muted);font-weight:600;margin-bottom:32px;line-height:1.6;}
 
 /* 00981A info card */
 #etf981a-card{
-  display:none;margin-bottom:24px;
+  display:none;margin-bottom:28px;
   background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:10px;padding:16px 22px;
-  box-shadow:none;
+  border:1px solid #23262f;
+  border-radius:12px;padding:18px 24px;
+  box-shadow:0 1px 2px rgba(0,0,0,.25);
   font-family:var(--font);
 }
 #etf981a-card.visible{display:block;}
@@ -1746,7 +1751,7 @@ body.sb-off #main{padding-left:76px;}
   display:flex;justify-content:space-between;align-items:center;
   margin-bottom:14px;
 }
-#etf981a-card-head .title{font-size:14px;font-weight:800;color:var(--text-strong);letter-spacing:.3px;}
+#etf981a-card-head .title{font-size:16px;font-weight:700;color:var(--text-strong);letter-spacing:.3px;}
 #etf981a-card-head .date-tag{font-size:11px;color:var(--muted);font-weight:600;
   background:var(--surface2);padding:3px 10px;border-radius:6px;}
 #etf981a-metrics{display:flex;gap:12px;}
@@ -1786,7 +1791,7 @@ body.sb-off #main{padding-left:76px;}
 
 /* deadline timeline */
 #dl-section{margin-bottom:40px;}
-#dl-title{font-size:14px;font-weight:700;color:var(--text-strong);margin-bottom:16px;display:flex;align-items:center;gap:6px;}
+#dl-title{font-size:15px;font-weight:700;color:var(--text-strong);margin-bottom:16px;display:flex;align-items:center;gap:6px;}
 #dl-row{display:flex;gap:12px;flex-wrap:wrap;}
 .dl-chip{
   display:flex;flex-direction:column;align-items:center;gap:3px;
@@ -1798,7 +1803,8 @@ body.sb-off #main{padding-left:76px;}
 .dl-chip.today{border-color:var(--rise);background:rgba(247,82,95,.15);box-shadow:0 0 0 1px var(--rise);}
 .dl-chip.soon{border-color:var(--amber);background:rgba(255,152,0,.12);}
 .dl-chip.upcoming{border-color:var(--border);background:var(--surface);}
-.dl-icon{font-size:18px;}
+.dl-icon{display:inline-flex;color:var(--muted);}
+.dl-icon .ic{width:19px;height:19px;}
 .dl-label{font-size:11px;font-weight:700;color:var(--text);text-align:center;line-height:1.2;}
 .dl-date{font-size:12px;font-weight:700;color:var(--text);}
 .dl-badge{font-size:10px;font-weight:700;padding:1px 7px;border-radius:6px;background:var(--surface2);color:var(--text);}
@@ -1807,27 +1813,28 @@ body.sb-off #main{padding-left:76px;}
 
 #ind-grid{
   display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
-  gap:16px;
+  grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+  gap:18px;
 }
 .ind-card{
-  background:var(--surface);border-radius:10px;
-  border:1px solid var(--border);
-  box-shadow:none;
+  background:var(--surface);border-radius:12px;
+  border:1px solid #23262f;
+  box-shadow:0 1px 2px rgba(0,0,0,.25);
   overflow:hidden;transition:box-shadow .2s,border-color .2s;
 }
 .ind-card:hover{box-shadow:0 4px 18px rgba(0,0,0,.4);border-color:var(--border2);}
 .ind-card.open{border-color:var(--accent);}
 .ind-card-head{
   display:flex;align-items:center;gap:14px;
-  padding:18px 22px;cursor:pointer;
+  padding:20px 24px;cursor:pointer;
   transition:background .15s;
 }
 .ind-card-head:hover{background:var(--surface2);}
 .ind-card.open .ind-card-head{background:var(--surface2);border-bottom:1px solid var(--border);}
-.ic-emoji{font-size:26px;flex-shrink:0;}
+.ic-emoji{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:10px;background:var(--surface2);color:var(--muted);flex-shrink:0;}
+.ic-emoji .ic{width:19px;height:19px;}
 .ic-name{font-size:16px;font-weight:700;color:var(--text-strong);flex:1;line-height:1.4;}
-.ic-cnt{font-size:12px;font-weight:700;color:#fff;background:var(--accent);padding:3px 12px;border-radius:8px;flex-shrink:0;}
+.ic-cnt{font-size:12px;font-weight:800;color:var(--accent-light);background:var(--accent-soft);padding:3px 12px;border-radius:8px;flex-shrink:0;}
 .ic-arrow{font-size:12px;color:var(--muted);flex-shrink:0;transition:transform .2s;}
 .ind-card.open .ic-arrow{transform:rotate(180deg);}
 .ind-card-body{display:none;padding:18px 22px;flex-wrap:wrap;gap:10px;}
@@ -1855,13 +1862,13 @@ body.sb-off #main{padding-left:76px;}
 #back-btn:hover{background:var(--surface2);border-color:var(--accent);color:var(--accent);}
 
 #detail{display:none;}
-#ch{font-size:26px;font-weight:800;color:var(--text-strong);margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+#ch{font-size:30px;font-weight:900;color:var(--text-strong);margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;letter-spacing:-.3px;}
 #ch-code{color:var(--accent);}
 #ch-name{font-size:17px;font-weight:600;color:var(--text);background:var(--surface2);padding:3px 14px;border-radius:8px;}
 #ch-ind{font-size:13px;color:var(--muted);font-weight:600;margin-bottom:6px;}
 #ch-mkt{font-size:13px;margin-bottom:14px;display:flex;gap:6px;flex-wrap:wrap;}
 #ch-vol{display:flex;gap:10px;flex-wrap:wrap;align-items:stretch;margin-bottom:22px;}
-#ch-vol .vol-head{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);font-weight:700;width:100%;margin-bottom:2px;}
+#ch-vol .vol-head{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text);font-weight:800;width:100%;margin-bottom:2px;}
 #ch-vol .vol-note{font-size:11px;color:var(--muted);font-weight:500;}
 #ch-vol .vol-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 16px;min-width:80px;text-align:center;}
 #ch-vol .vol-card .vlabel{font-size:12px;color:var(--muted);font-weight:600;margin-bottom:4px;}
@@ -1871,9 +1878,9 @@ body.sb-off #main{padding-left:76px;}
 #ch-vol .vol-card.hi .vlabel{color:#cdd9ff;}
 #ch-vol .vol-card.hi .vval{color:#fff;}
 #ch-vol .vol-card.hi .vval small{color:#cdd9ff;}
-.tag-twse{background:var(--accent-soft);color:#6f9bff;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:700;}
-.tag-warrant{background:rgba(255,152,0,.15);color:var(--amber);padding:3px 10px;border-radius:6px;font-size:12px;font-weight:700;}
-.tag-otc {background:rgba(38,166,154,.15);color:var(--fall);padding:3px 10px;border-radius:6px;font-size:12px;font-weight:700;}
+.tag-twse{background:rgba(255,255,255,.06);color:#b2b5be;border:1px solid var(--border);padding:2px 9px;border-radius:4px;font-size:12px;font-weight:600;}
+.tag-otc {background:rgba(255,255,255,.06);color:#b2b5be;border:1px solid var(--border);padding:2px 9px;border-radius:4px;font-size:12px;font-weight:600;}
+.tag-warrant{background:rgba(255,152,0,.12);color:#e0a44d;border:1px solid rgba(255,152,0,.28);padding:2px 9px;border-radius:4px;font-size:12px;font-weight:600;}
 .period-tag{background:var(--surface2);color:var(--text);padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap;}
 .memo-cell{font-size:11px;color:var(--muted);max-width:260px;word-break:break-word;}
 
@@ -1963,7 +1970,7 @@ body.sb-off #main{padding-left:76px;}
   border-radius:10px;overflow:hidden;border:1px solid var(--border);}
 #ptable th{
   padding:14px 22px;background:var(--bg);color:var(--muted);
-  font-size:12px;font-weight:600;letter-spacing:0.5px;text-align:left;
+  font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:.7px;text-align:left;
   cursor:pointer;user-select:none;white-space:nowrap;
   line-height:1.6;border-bottom:1px solid var(--border);
 }
@@ -1977,7 +1984,7 @@ body.sb-off #main{padding-left:76px;}
   border-radius:10px;overflow:hidden;border:1px solid var(--border);}
 #utable th{
   padding:14px 22px;background:var(--bg);color:var(--muted);
-  font-size:12px;font-weight:600;letter-spacing:0.5px;text-align:left;
+  font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:.7px;text-align:left;
   cursor:pointer;user-select:none;white-space:nowrap;
   line-height:1.6;border-bottom:1px solid var(--border);
 }
@@ -2030,10 +2037,11 @@ body.sb-off #main{padding-left:76px;}
 
 /* Q Cards */
 #qs{display:flex;flex-direction:column;gap:24px;}
-.qc{background:var(--surface);border-radius:10px;box-shadow:none;overflow:hidden;border:1px solid var(--border);transition:.2s;}
+.qc{background:var(--surface);border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,.25);overflow:hidden;border:1px solid #23262f;transition:.2s;}
 .qc:hover{border-color:var(--border2);}
-.qh{padding:16px 24px;font-weight:800;font-size:17px;color:var(--text-strong);display:flex;align-items:center;gap:10px;background:var(--surface2);border-bottom:1px solid var(--border);line-height:1.6;}
-.qh-icon{font-size:20px;}
+.qh{padding:16px 24px;font-weight:900;font-size:19px;color:var(--text-strong);display:flex;align-items:center;gap:10px;background:var(--surface2);border-bottom:1px solid var(--border);line-height:1.6;}
+.qh-icon{display:inline-flex;color:var(--accent-light);}
+.qh-icon .ic{width:20px;height:20px;}
 .qbody{padding:20px 24px 24px;display:flex;flex-direction:column;gap:16px;line-height:1.7;}
 .qcol{flex:1;min-width:200px;}
 .qst{font-size:12px;font-weight:700;letter-spacing:.3px;margin-bottom:10px;padding:5px 14px;border-radius:6px;display:inline-flex;align-items:center;gap:5px;}
@@ -2042,7 +2050,7 @@ body.sb-off #main{padding-left:76px;}
 .st-s{background:var(--accent-soft);color:#6f9bff;border:1px solid rgba(41,98,255,.35);}
 
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px;background:var(--surface);}
-th{text-align:left;padding:13px 18px;color:var(--muted);font-size:12px;font-weight:700;border-bottom:1px solid var(--border);line-height:1.6;background:var(--bg);}
+th{text-align:left;padding:13px 18px;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;border-bottom:1px solid var(--border);line-height:1.6;background:var(--bg);}
 td{padding:12px 18px;color:var(--text);border-bottom:1px solid var(--border);font-size:14px;line-height:1.8;}
 tr:last-child td{border-bottom:none;}
 tr:hover td{background:var(--surface2);}
@@ -2063,51 +2071,51 @@ tr:hover td{background:var(--surface2);}
 </style>
 </head>
 <body>
-<button id="sb-toggle" onclick="toggleSb()" title="展開/收合側欄">☰</button>
-<button id="upcoming-btn" onclick="openIRBoard('upcoming')">📅 即將法說 <span id="upcoming-cnt">0</span></button>
-<button id="pending-btn" onclick="openIRBoard('pending')">📋 待法說 <span id="pending-cnt">0</span></button>
+<button id="sb-toggle" onclick="toggleSb()" title="展開/收合側欄"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+<button id="upcoming-btn" onclick="openIRBoard('upcoming')"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="16" rx="1.5"/><path d="M4 9h16M9 3v4M15 3v4"/></svg> 即將法說 <span id="upcoming-cnt">0</span></button>
+<button id="pending-btn" onclick="openIRBoard('pending')"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="1"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6M9 14h6"/></svg> 待法說 <span id="pending-cnt">0</span></button>
 <div id="sb">
   <div id="sb-top">
-    <div id="sb-logo">📊 法說會查詢<span>財報期對應一覽</span></div>
+    <div id="sb-logo"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 法說會查詢<span>財報期對應一覽</span></div>
   </div>
-  <input id="srch" placeholder="🔍  搜尋代號或名稱…" oninput="onSearch(this.value)">
+  <input id="srch" placeholder="搜尋代號或名稱…" oninput="onSearch(this.value)">
   <div id="sb-count"></div>
   <div id="clist"></div>
 </div>
 <div id="main">
   <div id="home">
-    <div id="home-title">📊 法說會財報對應查詢</div>
+    <div id="home-title"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 法說會財報對應查詢</div>
     <div id="home-sub">選擇產業，再點選公司，查看各財報期前後的法說會紀錄</div>
-    <div style="display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;padding:7px 14px;background:#eff6ff;border-radius:10px;border:1.5px solid #bfdbfe;">
-      <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#223A5E;"></span>
-      <span style="font-size:12px;color:#1e3a5f;font-weight:700;">深藍色 = 實收資本額 ≥ 100億（大型股）</span>
+    <div style="display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;padding:7px 14px;background:#1e222d;border-radius:10px;border:1.5px solid #2a2e39;">
+      <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#2962ff;"></span>
+      <span style="font-size:12px;color:#d1d4dc;font-weight:700;">深藍色 = 實收資本額 ≥ 100億（大型股）</span>
     </div>
     <div id="etf981a-card">
       <div id="etf981a-card-head">
-        <span class="title">📈 00981A 統一台股增長主動式ETF基金</span>
+        <span class="title"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg> 00981A 統一台股增長主動式ETF基金</span>
         <span class="date-tag" id="etf981a-date-tag"></span>
       </div>
       <div id="etf981a-metrics">
         <div class="etf-metric">
-          <div class="label">🔄 差異組數</div>
+          <div class="label"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg> 差異組數</div>
           <div class="value" id="etf-diff">—</div>
           <div class="unit">組</div>
         </div>
         <div class="etf-metric">
-          <div class="label">💰 基金淨資產</div>
+          <div class="label"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="9" cy="7" rx="6" ry="3"/><path d="M3 7v5c0 1.7 2.7 3 6 3"/><path d="M3 12v5c0 1.7 2.7 3 6 3 .5 0 1 0 1.5-.1"/><circle cx="16" cy="15" r="5"/></svg> 基金淨資產</div>
           <div class="value neutral" id="etf-nav-total">—</div>
           <div class="delta" id="etf-nav-total-delta"></div>
           <div class="unit">元</div>
         </div>
         <div class="etf-metric">
-          <div class="label">📊 淨值</div>
+          <div class="label"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 淨值</div>
           <div class="value neutral" id="etf-nav-unit">—</div>
           <div class="delta" id="etf-nav-unit-delta"></div>
           <div class="unit">NT$/unit</div>
         </div>
       </div>
       <div id="etf981a-toggle" onclick="toggleEtfDiff()" style="display:none">
-        📋 成分股一覽 <span id="etf981a-diff-cnt"></span><span class="arrow">▾</span>
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="1"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6M9 14h6"/></svg> 成分股一覽 <span id="etf981a-diff-cnt"></span><span class="arrow"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
       </div>
       <div id="etf981a-diff">
         <div id="etf981a-diff-title">與前日差異 <span id="etf981a-prev-date-label" style="opacity:.65"></span>；占當日成交量 =|張數變動|/當日成交量</div>
@@ -2126,7 +2134,7 @@ tr:hover td{background:var(--surface2);}
       </div>
     </div>
     <div id="dl-section">
-      <div id="dl-title">📅 台股財報截止日</div>
+      <div id="dl-title"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="16" rx="1.5"/><path d="M4 9h16M9 3v4M15 3v4"/></svg> 台股財報截止日</div>
       <div id="dl-row"></div>
     </div>
     <div id="ind-grid"></div>
@@ -2136,11 +2144,11 @@ tr:hover td{background:var(--surface2);}
   <div id="upcoming-board" class="ir-board">
     <div class="ir-board-head">
       <button class="ir-board-back" onclick="closeIRBoard()">← 返回</button>
-      <span class="ir-board-title">📅 即將舉行法說會</span>
+      <span class="ir-board-title"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="16" rx="1.5"/><path d="M4 9h16M9 3v4M15 3v4"/></svg> 即將舉行法說會</span>
       <div class="ir-board-spacer"></div>
     </div>
     <div class="ir-board-search">
-      <input id="upcoming-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderUpcoming()">
+      <input id="upcoming-search" type="text" placeholder="搜尋代號或名稱…" oninput="renderUpcoming()">
     </div>
     <div class="ir-board-scroll">
       <div class="ir-board-body">
@@ -2152,10 +2160,10 @@ tr:hover td{background:var(--surface2);}
             <th data-col="公司名稱" onclick="sortU('公司名稱')">名稱</th>
             <th data-col="市場" onclick="sortU('市場')">市場</th>
             <th data-col="說明財報期" onclick="sortU('說明財報期')">財報期</th>
-            <th data-col="日期" onclick="sortU('日期')">通過日</th>
-            <th data-col="財報錨點" onclick="sortU('財報錨點')">截止日</th>
             <th data-col="即將法說日" onclick="sortU('即將法說日')">即將法說日</th>
             <th data-col="即將法說時間" onclick="sortU('即將法說時間')">時間</th>
+            <th>主辦</th>
+            <th>波動最大日(歷史均)</th>
             <th>地點</th>
             <th>公司網站法說資訊</th>
             <th>影音連結</th>
@@ -2170,11 +2178,11 @@ tr:hover td{background:var(--surface2);}
   <div id="pending-board" class="ir-board">
     <div class="ir-board-head">
       <button class="ir-board-back" onclick="closeIRBoard()">← 返回</button>
-      <span class="ir-board-title">📋 尚未舉行法說會</span>
+      <span class="ir-board-title"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="1"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6M9 14h6"/></svg> 尚未舉行法說會</span>
       <div class="ir-board-spacer"></div>
     </div>
     <div class="ir-board-search">
-      <input id="pending-search" type="text" placeholder="🔍 搜尋代號或名稱…" oninput="renderPending()">
+      <input id="pending-search" type="text" placeholder="搜尋代號或名稱…" oninput="renderPending()">
     </div>
     <div class="ir-board-scroll">
       <div class="ir-board-body">
@@ -2213,8 +2221,8 @@ tr:hover td{background:var(--surface2);}
 <script>
 function toggleSb() {
   document.body.classList.toggle('sb-off');
-  document.getElementById('sb-toggle').textContent =
-    document.body.classList.contains('sb-off') ? '☰' : '✕';
+  document.getElementById('sb-toggle').innerHTML =
+    document.body.classList.contains('sb-off') ? '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>' : '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 }
 
 // 短鍵還原：序列化時用 A,B,C… 縮小檔案，載入時還原成中文鍵（下游渲染碼不變）
@@ -2223,10 +2231,10 @@ function _rh(r){const o={};for(const k in r)o[_KM[k]||k]=r[k];const v=o['法說�
 // 即將法說的「公司網站法說資訊／影音連結」：URL 轉連結，無資料顯示灰字「無」
 function _irLink(v){
   v = (v == null ? '' : String(v)).trim();
-  if (!v || v === '無') return '<span style="color:#cbd5e1">無</span>';
+  if (!v || v === '無') return '<span style="color:#5d606b">無</span>';
   const urls = v.match(/https?:\/\/[^\s]+/g);
   if (!urls) return v;
-  return urls.map(u => `<a href="${u}" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:underline">${u.length>40?u.slice(0,40)+'…':u}</a>`).join('<br>');
+  return urls.map(u => `<a href="${u}" target="_blank" rel="noopener" style="color:#2962ff;text-decoration:underline">${u.length>40?u.slice(0,40)+'…':u}</a>`).join('<br>');
 }
 const RECORDS    = __DATA__.map(_rh);
 const FIRM_INFO  = __FIRM_INFO__;
@@ -2249,8 +2257,8 @@ const VOL_STATS         = __VOL_STATS__;
 const ETF981A_NAV_DELTA = __ETF981A_NAV_DELTA__;
 
 const PERIOD_ICON = {
-  'Q1財報':'🌱','Q2財報':'☀️','Q3財報':'🍂','Q4財報':'❄️',
-  '年報(大型股/金融)':'🏦','年報(其餘)':'📋','月營收':'📊','其他':'📌'
+  'Q1財報':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21v-8"/><path d="M12 13C12 9 9 7 4 7c0 4 3 6 8 6Z"/><path d="M12 11c0-3 2.5-5 7-5 0 3.5-2.5 5-7 5Z"/></svg>','Q2財報':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>','Q3財報':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20C3 14 6 5 19 5c1 10-5 14-12 14a6 6 0 0 1-3-1Z"/><path d="M9 16c2-4 5-6 8-7"/></svg>','Q4財報':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4 6l16 12M20 6L4 18"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2M4 9l1 3-1 3M20 9l-1 3 1 3"/></svg>',
+  '年報(大型股/金融)':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V10M9 21V10M15 21V10M19 21V10"/><path d="M12 3l8 5H4Z"/></svg>','年報(其餘)':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="1"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6M9 14h6"/></svg>','月營收':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg>','其他':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.7-6-10a6 6 0 0 1 12 0c0 4.3-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/></svg>'
 };
 const PERIOD_ORDER = ['Q1財報','Q2財報','Q3財報','Q4財報','年報(大型股/金融)','年報(其餘)','月營收','其他'];
 
@@ -2291,17 +2299,17 @@ let openCards = new Set();  // 首頁可同時展開多個產業卡片
 
 // ── Industry emoji map ──
 const IND_EMOJI = {
-  '水泥':'🏗️','食品':'🍱','塑膠':'🧪','紡織':'🧵','電機機械':'⚙️',
-  '電器電纜':'🔌','化學':'⚗️','生技醫療':'💊','玻璃陶瓷':'🫙','造紙':'📄',
-  '鋼鐵':'🏭','橡膠':'🔧','汽車':'🚗','電子':'💻','半導體':'🔬',
-  '光電':'💡','通信網路':'📡','電子零組件':'🔩','電腦周邊':'🖥️',
-  '建材營造':'🏗️','航運':'🚢','觀光餐旅':'🏨','金融':'🏦','貿易百貨':'🛍️',
-  '油電燃氣':'⛽','其他':'📌'
+  '水泥':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v16"/><path d="M15 9h4a1 1 0 0 1 1 1v11"/><path d="M3 21h18"/><path d="M7 8h.01M7 12h.01M7 16h.01M11 8h.01M11 12h.01M11 16h.01"/></svg>','食品':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v8a2 2 0 0 0 2 2h0V3"/><path d="M9 3v18"/><path d="M16 3c-1.5 0-3 1.5-3 4s1.5 4 3 4"/><path d="M16 3v18"/></svg>','塑膠':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6l-5 9a1 1 0 0 0 .9 1.5h12.2A1 1 0 0 0 19 18l-5-9V3"/><path d="M7.5 14h9"/></svg>','紡織':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3l5 3-2 4-2-1v11a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V9L6 10 4 6l5-3 3 2 3-2Z"/></svg>','電機機械':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>',
+  '電器電纜':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6"/><path d="M7 8h10v3a5 5 0 0 1-10 0Z"/><path d="M12 16v6"/></svg>','化學':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6l-5 9a1 1 0 0 0 .9 1.5h12.2A1 1 0 0 0 19 18l-5-9V3"/><path d="M7.5 14h9"/></svg>','生技醫療':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="8" rx="4" transform="rotate(-45 12 12)"/><path d="M8.5 8.5l7 7"/></svg>','玻璃陶瓷':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l-1.2 9a5 5 0 0 1-9.6 0Z"/><path d="M12 17v4M8 21h8"/></svg>','造紙':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7Z"/><path d="M14 3v4h4"/><path d="M9 13h6M9 17h6"/></svg>',
+  '鋼鐵':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4V11l6 4V8a1 1 0 0 1 1.4-.9L21 9v12Z"/><path d="M3 21h18"/><path d="M7 17h.01M11 17h.01M15 17h.01"/></svg>','橡膠':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4a5 5 0 0 0-6.5 6.5L3 16v5h5l5.5-5.5A5 5 0 0 0 20 9l-3 3-3-3 3-3a5 5 0 0 0-2-1Z"/></svg>','汽車':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l1.5-5A2 2 0 0 1 8.4 6.7h7.2a2 2 0 0 1 1.9 1.3L19 13"/><path d="M4 13h16v4a1 1 0 0 1-1 1h-1v1H6v-1H5a1 1 0 0 1-1-1Z"/><path d="M7 17h.01M17 17h.01"/></svg>','電子':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg>','半導體':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><rect x="9.5" y="9.5" width="5" height="5" rx="0.5"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>',
+  '光電':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M8.5 14a5 5 0 1 1 7 0c-.7.7-1 1.3-1 2.2V17H9.5v-.8c0-.9-.3-1.5-1-2.2Z"/></svg>','通信網路':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5h.01"/></svg>','電子零組件':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><rect x="9.5" y="9.5" width="5" height="5" rx="0.5"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>','電腦周邊':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg>',
+  '建材營造':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v16"/><path d="M15 9h4a1 1 0 0 1 1 1v11"/><path d="M3 21h18"/><path d="M7 8h.01M7 12h.01M7 16h.01M11 8h.01M11 12h.01M11 16h.01"/></svg>','航運':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16l1.5-5h15L21 16"/><path d="M4 16a3 3 0 0 0 4 0 3 3 0 0 0 4 0 3 3 0 0 0 4 0 3 3 0 0 0 4 0"/><path d="M12 3v8M9 6h6"/></svg>','觀光餐旅':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8v12M3 14h18v6M21 14v-2a2 2 0 0 0-2-2h-7v4"/><path d="M7 11.5h.01"/></svg>','金融':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V10M9 21V10M15 21V10M19 21V10"/><path d="M12 3l8 5H4Z"/></svg>','貿易百貨':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l-1 12a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>',
+  '油電燃氣':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 21h12"/><path d="M7 9h6"/><path d="M14 8l3 3v6a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9l-3-3"/></svg>','其他':'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.7-6-10a6 6 0 0 1 12 0c0 4.3-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/></svg>'
 };
 function indEmoji(name) {
   for (const [k, v] of Object.entries(IND_EMOJI))
     if (name.includes(k)) return v;
-  return '🏢';
+  return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01"/><path d="M5 21h14"/></svg>';
 }
 function indShort(name) {
   // strip leading code like "M1100 " → "水泥工業"
@@ -2332,10 +2340,10 @@ function renderDeadlines() {
   }
 
   const FIXED = [
-    {m:3, d:31, label:'Q4\n財報',   icon:'❄️'},
-    {m:5, d:15, label:'Q1\n財報',   icon:'🌱'},
-    {m:8, d:14, label:'Q2\n財報',   icon:'☀️'},
-    {m:11,d:14, label:'Q3\n財報',   icon:'🍂'},
+    {m:3, d:31, label:'Q4\n財報',   icon:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4 6l16 12M20 6L4 18"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2M4 9l1 3-1 3M20 9l-1 3 1 3"/></svg>'},
+    {m:5, d:15, label:'Q1\n財報',   icon:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21v-8"/><path d="M12 13C12 9 9 7 4 7c0 4 3 6 8 6Z"/><path d="M12 11c0-3 2.5-5 7-5 0 3.5-2.5 5-7 5Z"/></svg>'},
+    {m:8, d:14, label:'Q2\n財報',   icon:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>'},
+    {m:11,d:14, label:'Q3\n財報',   icon:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20C3 14 6 5 19 5c1 10-5 14-12 14a6 6 0 0 1-3-1Z"/><path d="M9 16c2-4 5-6 8-7"/></svg>'},
   ];
 
   let all = [];
@@ -2348,13 +2356,13 @@ function renderDeadlines() {
   }
   // 大型股年報：逐年實際日期
   for (const y of [yr, yr + 1]) {
-    all.push({date: lcDate(y), label: '年報\n大型股', icon: '🏦'});
+    all.push({date: lcDate(y), label: '年報\n大型股', icon: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V10M9 21V10M15 21V10M19 21V10"/><path d="M12 3l8 5H4Z"/></svg>'});
   }
 
   // 月營收：只顯示前1個月 ～ 後5個月
   for (let i = -1; i <= 5; i++) {
     const d = new Date(yr, today.getMonth() + i, 10);
-    all.push({date: d, label: '月營收\n' + (d.getMonth()+1) + '月', icon: '📊'});
+    all.push({date: d, label: '月營收\n' + (d.getMonth()+1) + '月', icon: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg>'});
   }
 
   // 篩選：前2週 ～ 後12個月
@@ -2417,7 +2425,7 @@ function renderHomeGrid() {
         <span class="ic-emoji">${emoji}</span>
         <span class="ic-name">${short}</span>
         <span class="ic-cnt">${validCodes.length} 家</span>
-        <span class="ic-arrow">▼</span>
+        <span class="ic-arrow"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
       </div>
       <div class="ind-card-body">${chips}</div>
     </div>`;
@@ -2461,7 +2469,7 @@ function renderSidebar(filter) {
     if (!validCodes.length) continue;
     const isOpen = openInds.has(ind);
     html += `<div class="ind-header${isOpen ? ' open' : ''}" onclick="toggleInd('${escAttr(ind)}')">
-      <span>🏭 ${ind}</span>
+      <span><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4V11l6 4V8a1 1 0 0 1 1.4-.9L21 9v12Z"/><path d="M3 21h18"/><path d="M7 17h.01M11 17h.01M15 17h.01"/></svg> ${ind}</span>
       <span style="display:flex;align-items:center;gap:6px;">
         <span class="ind-cnt">${validCodes.length}</span>
         <span class="ind-arrow">▶</span>
@@ -2477,7 +2485,7 @@ function renderSidebar(filter) {
   if (orphans.length) {
     const isOpen = openInds.has('__other__');
     html += `<div class="ind-header${isOpen ? ' open' : ''}" onclick="toggleInd('__other__')">
-      <span>📌 未分類</span>
+      <span><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.7-6-10a6 6 0 0 1 12 0c0 4.3-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/></svg> 未分類</span>
       <span style="display:flex;align-items:center;gap:6px;">
         <span class="ind-cnt">${orphans.length}</span>
         <span class="ind-arrow">▶</span>
@@ -2529,7 +2537,7 @@ function selectCompany(code) {
   const co = companies[code];
   document.getElementById('ch-code').textContent = code;
   document.getElementById('ch-name').textContent = co.name || '';
-  document.getElementById('ch-ind').textContent  = co.industry ? '🏭 ' + co.industry : '';
+  document.getElementById('ch-ind').innerHTML  = co.industry ? '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4V11l6 4V8a1 1 0 0 1 1.4-.9L21 9v12Z"/><path d="M3 21h18"/><path d="M7 17h.01M11 17h.01M15 17h.01"/></svg> ' + co.industry : '';
   const mkts = [...co.mkts].filter(Boolean);
   const warranTag = WARRANT.has(code) ? '<span class="tag-warrant">可發行權證</span>' : '';
   document.getElementById('ch-mkt').innerHTML =
@@ -2543,7 +2551,7 @@ function selectCompany(code) {
       `<div class="vol-card${hi ? ' hi' : ''}"><div class="vlabel">${lbl}</div>` +
       `<div class="vval">${v == null ? '<small>—</small>' : v.toFixed(2) + '<small>%</small>'}</div></div>`;
     _chVol.innerHTML =
-      `<div class="vol-head">📊 歷史法說會平均日內波動率` +
+      `<div class="vol-head"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 歷史法說會平均日內波動率` +
       `<span class="vol-note">Parkinson 估計·過去 ${_vs.n} 場法說平均</span></div>` +
       _cell('前2日', _vs.t_2) + _cell('前1日', _vs.t_1) +
       _cell('法說當日', _vs.t0, true) + _cell('隔1日', _vs.t1);
@@ -2578,7 +2586,7 @@ function selectYear(yr) {
       return `<span class="${m.includes('TWSE') ? 'tag-twse' : 'tag-otc'}">${m}</span>`;
     }
     function tbl(arr, cls) {
-      if (!arr.length) return '<div class="empty">💤 無資料</div>';
+      if (!arr.length) return '<div class="empty">無資料</div>';
       return `<table>
         <tr><th>董事會通過日</th><th>法說會日期</th><th>通過→法說</th><th>法說↔截止(交易日)</th><th>財報截止日</th><th>市場</th><th>說明期別</th><th>公告主旨</th><th>擇要訊息</th></tr>
         ${arr.map(r => {
@@ -2586,29 +2594,29 @@ function selectYear(yr) {
           const period = r['說明財報期'] || '';
           const calDiff = r['通過到法說天數'];
           const calStr = (calDiff != null && calDiff !== '' && !isNaN(calDiff))
-            ? `<span style="color:#059669;font-weight:800">+${calDiff}天</span>`
-            : '<span style="color:#cbd5e1">—</span>';
+            ? `<span style="color:#26a69a;font-weight:800">+${calDiff}天</span>`
+            : '<span style="color:#5d606b">—</span>';
           const tdVal = r['法說到截止交易日'];
           const tdStr = (tdVal != null && tdVal !== '' && !isNaN(tdVal))
             ? `<span class="${tdVal < 0 ? 'dp' : 'dn'}">${tdVal}</span>`
-            : '<span style="color:#cbd5e1">—</span>';
+            : '<span style="color:#5d606b">—</span>';
           const 主旨 = r['主旨'] || '';
           // 法說清單：每季（時段×主辦）各第一場
-          const _segC = s => s.時段 === '下午' ? '#0369a1' : (s.時段 === '早上' ? '#c2410c' : '#64748b');
-          const _brkC = b => b === '外資' ? '#7c3aed' : (b === '內資' ? '#0891b2' : (b === '自辦' ? '#16a34a' : '#94a3b8'));
+          const _segC = s => s.時段 === '下午' ? '#6f9bff' : (s.時段 === '早上' ? '#ff9800' : '#787b86');
+          const _brkC = b => b === '外資' ? '#ff9800' : (b === '內資' ? '#2962ff' : (b === '自辦' ? '#26a69a' : '#787b86'));
           const sessions = Array.isArray(r['法說清單']) ? r['法說清單'] : [];
           const sessHTML = sessions.length
             ? sessions.map(s => `<div style="font-size:11px;line-height:1.5;white-space:nowrap">
                 <span style="color:${_segC(s)};font-weight:700">${s.時段 || '—'}</span>
                 <span style="background:${_brkC(s.主辦)}22;color:${_brkC(s.主辦)};padding:0 4px;border-radius:3px;margin:0 3px;font-weight:700">${s.主辦 || ''}</span>
-                <span style="color:#0369a1;font-weight:700">${s.日期}</span> ${s.時間 || ''}</div>`).join('')
-            : (r['法說日'] ? `<span style="color:#0369a1;font-weight:700">${r['法說日']}</span>` : '<span style="color:#cbd5e1">—</span>');
+                <span style="color:#6f9bff;font-weight:700">${s.日期}</span> ${s.時間 || ''}</div>`).join('')
+            : (r['法說日'] ? `<span style="color:#6f9bff;font-weight:700">${r['法說日']}</span>` : '<span style="color:#5d606b">—</span>');
           // 擇要訊息：有兩場時逐場列出（各自標時段/主辦），否則用 primary
           const memoHTML = (sessions.length && sessions.some(s => s.擇要))
             ? sessions.map(s => {
                 const mm = s.擇要 || '';
                 if (!mm) return '';
-                return `<div style="margin-bottom:5px;padding-bottom:4px;border-bottom:1px dashed #e2e8f0">
+                return `<div style="margin-bottom:5px;padding-bottom:4px;border-bottom:1px dashed #2a2e39">
                   <span style="color:${_segC(s)};font-weight:700">${s.時段 || ''}</span>
                   <span style="background:${_brkC(s.主辦)}22;color:${_brkC(s.主辦)};padding:0 4px;border-radius:3px;margin:0 3px;font-weight:700">${s.主辦 || ''}</span>${mm}</div>`;
               }).filter(Boolean).join('')
@@ -2627,17 +2635,17 @@ function selectYear(yr) {
         }).join('')}
       </table>`;
     }
-    const icon = PERIOD_ICON[period] || '📌';
+    const icon = PERIOD_ICON[period] || '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.7-6-10a6 6 0 0 1 12 0c0 4.3-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/></svg>';
     const div = document.createElement('div');
     div.className = 'qc';
     div.innerHTML = `
       <div class="qh"><span class="qh-icon">${icon}</span>${fiscalLabel(period, yr)}</div>
       <div class="qbody">
-        <div class="qst st-b">🕐 截止日前（${before.length} 筆）</div>
+        <div class="qst st-b"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> 截止日前（${before.length} 筆）</div>
         ${before.length ? tbl(sB, 'dn') : ''}
-        <div class="qst st-a">✅ 截止日後（${after.length} 筆）</div>
+        <div class="qst st-a"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-5"/></svg> 截止日後（${after.length} 筆）</div>
         ${after.length ? tbl(sA, 'dp') : ''}
-        <div class="qst st-s">🎯 截止日當天（${same.length} 筆）</div>
+        <div class="qst st-s"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg> 截止日當天（${same.length} 筆）</div>
         ${same.length ? tbl(same, 'dz') : ''}
       </div>`;
     qs.appendChild(div);
@@ -2680,7 +2688,7 @@ function weightDelta(code) {
   const d = Math.round((curr - prev) * 100) / 100;
   if (Math.abs(d) < 0.005) return '';
   const sign = d > 0 ? '+' : '';
-  const col  = d > 0 ? '#f87171' : '#16a34a';
+  const col  = d > 0 ? '#f7525f' : '#26a69a';
   return `<span style="color:${col};font-size:10px;font-weight:800;margin-left:3px">【${sign}${d.toFixed(2)}%】</span>`;
 }
 
@@ -2707,7 +2715,7 @@ function renderPending() {
     th.classList.remove('asc','desc');
     if (th.dataset.col === pSortCol) th.classList.add(pSortAsc ? 'asc' : 'desc');
   });
-  const _p981aLabel = ETF981A_DATE ? `<span class="etf981a-label">📊 00981A 截至 ${ETF981A_DATE}</span>` : '';
+  const _p981aLabel = ETF981A_DATE ? `<span class="etf981a-label"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 00981A 截至 ${ETF981A_DATE}</span>` : '';
   document.getElementById('p-meta').innerHTML = `<span>共 ${data.length} 筆（總計 ${PENDING_IR.length} 筆）</span>${_p981aLabel}`;
   const _pSeen = new Set();
   const _p981aChips = data.filter(r => {
@@ -2718,7 +2726,7 @@ function renderPending() {
   const _pBar = document.getElementById('p-981a-bar');
   if (_p981aChips.length > 0) {
     _pBar.style.display = 'flex';
-    _pBar.innerHTML = `<span class="etf981a-bar-lbl">📊 成分股（${_p981aChips.length}）：</span>`
+    _pBar.innerHTML = `<span class="etf981a-bar-lbl"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 成分股（${_p981aChips.length}）：</span>`
       + _p981aChips.map(r => {
           const c = String(r['公司代號']||'').trim();
           const hasFut = FUTURES.has(c);
@@ -2732,7 +2740,7 @@ function renderPending() {
   // 添加表格圖例
   const pLegendHtml = `<div class="table-legend">
     <div class="legend-item">
-      <span class="legend-text"><b style="color:#1e3a5f;font-weight:800">粗體名稱</b> = 有個股期</span>
+      <span class="legend-text"><b style="color:#d1d4dc;font-weight:800">粗體名稱</b> = 有個股期</span>
     </div>
     <div class="legend-item">
       <span class="legend-dot legend-orange"></span>
@@ -2764,9 +2772,9 @@ function renderPending() {
     const wHtml = isWarrant ? `${mkt ? '<br>' : ''}<span class="tag-warrant">可發行權證</span>` : '';
     const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
     const weightHtml = is981a ? `<span class="etf981a-weight">權重：${ETF981A[code]}</span>` : '';
-    const codeStyle = isLarge ? 'color:#1d4ed8' : '';   // 藍色代號 = 大型股/金融
+    const codeStyle = isLarge ? 'color:#2962ff' : '';   // 藍色代號 = 大型股/金融
     // 橘色名稱 = 成分股；粗體名稱 = 有個股期（可黑可橘，兩者獨立）
-    const nameEl = `<span style="${is981a?'color:#f97316;':''}${hasFut?'font-weight:800;':''}">${r['公司名稱']||''}</span>`;
+    const nameEl = `<span style="${is981a?'color:#ff9800;':''}${hasFut?'font-weight:800;':''}">${r['公司名稱']||''}</span>`;
     return `<tr>
       <td><strong style="${codeStyle}">${r['公司代號']||''}</strong></td>
       <td>${nameEl}${weightHtml}</td>
@@ -2791,6 +2799,46 @@ function sortU(col) {
 }
 // 即將法說：本季首場主辦(內資/外資/自辦)＋時段(早上/下午/海外) 註記
 const _OVERSEAS_RE = /香港|新加坡|海外|美國|紐約|倫敦|東京|日本|韓國|首爾|上海|深圳|北京|波士頓|舊金山|法蘭克福|瑞士|英國|Hong\s?Kong|Singapore|New\s?York|London|Tokyo|Seoul|Shanghai|Boston|San\s?Francisco/i;
+// 主辦券商：從場次擇要文字抽出券商名（中文/英文對到同一家）；自辦→「自辦」
+const _BROKERS=[
+ ['大和國泰','國泰'],['華南永昌','華南永昌'],['中國信託','中信'],['統一綜合','統一'],
+ ['凱基','凱基'],['KGI','凱基'],['元大','元大'],['永豐','永豐'],['群益','群益'],['富邦','富邦'],
+ ['國泰','國泰'],['台新','台新'],['兆豐','兆豐'],['中信','中信'],['第一金','第一金'],['日盛','日盛'],
+ ['宏遠','宏遠'],['康和','康和'],['大昌','大昌'],['致和','致和'],['福邦','福邦'],['犇亞','犇亞'],
+ ['元富','元富'],['玉山','玉山'],['新光','新光'],['德信','德信'],['大慶','大慶'],['美好','美好'],
+ ['亞東','亞東'],['陽信','陽信'],['國票','國票'],['華南','華南永昌'],['永昌','華南永昌'],
+ ['高盛','高盛'],['Goldman','高盛'],['匯豐','匯豐'],['滙豐','匯豐'],['HSBC','匯豐'],['花旗','花旗'],['Citi','花旗'],
+ ['美銀美林','美銀美林'],['美林','美銀美林'],['Merrill','美銀美林'],['美銀','美銀美林'],['BofA','美銀美林'],['Bank of America','美銀美林'],
+ ['摩根士丹利','摩根士丹利'],['Morgan Stanley','摩根士丹利'],['大摩','摩根士丹利'],
+ ['摩根大通','摩根大通'],['小摩','摩根大通'],['JPMorgan','摩根大通'],['J.P. Morgan','摩根大通'],['JP Morgan','摩根大通'],
+ ['瑞銀','瑞銀'],['UBS','瑞銀'],['瑞士信貸','瑞信'],['瑞信','瑞信'],['Credit Suisse','瑞信'],
+ ['麥格理','麥格理'],['Macquarie','麥格理'],['野村','野村'],['Nomura','野村'],['瑞穗','瑞穗'],['Mizuho','瑞穗'],
+ ['Jefferies','Jefferies'],['巴克萊','巴克萊'],['Barclays','巴克萊'],['德意志','德意志'],['Deutsche','德意志'],
+ ['里昂','里昂'],['CLSA','里昂'],['法國巴黎','法國巴黎'],['BNP','法國巴黎'],['星展','星展'],['DBS','星展'],
+ ['大和','大和'],['Daiwa','大和'],
+];
+function brokerName(t){ if(!t) return ''; for(const kv of _BROKERS){ if(t.indexOf(kv[0])>=0) return kv[1]; } return ''; }
+// 該股歷史法說 t-2~t+1 平均波動率中，最大的相對日 + 數值
+function peakVolDay(code){
+  const v=(typeof VOL_STATS!=='undefined')?VOL_STATS[String(code||'').trim()]:null;
+  if(!v) return '<span style="color:var(--muted)">—</span>';
+  const days=[['t_2','前2日'],['t_1','前1日'],['t0','當日'],['t1','隔1日']];
+  let best=null;
+  for(const d of days){ const x=v[d[0]]; if(x!=null && (best===null || x>best.x)) best={x:x,lbl:d[1]}; }
+  if(!best) return '<span style="color:var(--muted)">—</span>';
+  return '<span style="font-weight:600">'+best.lbl+'</span> <span style="color:var(--accent-light);font-weight:600">'+best.x.toFixed(2)+'%</span>';
+}
+function upcomingBroker(r){
+  const list=Array.isArray(r['法說清單'])?r['法說清單']:[];
+  const s=list.find(x=>x&&x['日期']===r['即將法說日'])||list[0]||null;
+  if(!s) return '<span style="color:var(--muted)">—</span>';
+  const host=s['主辦']||'';
+  if(host==='自辦') return '<span style="color:var(--accent-light);font-weight:600">自辦</span>';
+  const nm=brokerName(s['擇要']||'');
+  if(nm) return '<span style="color:var(--text);font-weight:600">'+nm+'</span>';
+  if(host) return '<span style="color:var(--muted)">'+host+'</span>';
+  return '<span style="color:var(--muted)">—</span>';
+}
 function upcomingHostTag(r) {
   const list = Array.isArray(r['法說清單']) ? r['法說清單'] : [];
   // 注意：_rh 已把場次內層鍵還原成中文（日期/時間/時段/主辦/類型/擇要）
@@ -2803,8 +2851,8 @@ function upcomingHostTag(r) {
   }
   const overseas = _OVERSEAS_RE.test(r['即將法說地點'] || '');
   if (!host && !seg && !overseas) return '';
-  const color = host==='外資' ? '#ea580c' : host==='內資' ? '#2563eb'
-              : host==='自辦' ? '#15803d' : '#64748b';
+  const color = host==='外資' ? '#ff9800' : host==='內資' ? '#2962ff'
+              : host==='自辦' ? '#26a69a' : '#787b86';
   const txt = ['本季首場', host, overseas ? '海外' : seg].filter(Boolean).join('・');
   return `<div style="margin-top:3px;font-size:10px;font-weight:700;color:${color};white-space:nowrap">${txt}</div>`;
 }
@@ -2831,7 +2879,7 @@ function renderUpcoming() {
     th.classList.remove('asc','desc');
     if (th.dataset.col === uSortCol) th.classList.add(uSortAsc ? 'asc' : 'desc');
   });
-  const _u981aLabel = ETF981A_DATE ? `<span class="etf981a-label">📊 00981A 截至 ${ETF981A_DATE}</span>` : '';
+  const _u981aLabel = ETF981A_DATE ? `<span class="etf981a-label"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 00981A 截至 ${ETF981A_DATE}</span>` : '';
   document.getElementById('u-meta').innerHTML = `<span>共 ${data.length} 筆（總計 ${UPCOMING_IR.length} 筆）</span>${_u981aLabel}`;
   const _uSeen = new Set();
   const _u981aChips = data.filter(r => {
@@ -2842,7 +2890,7 @@ function renderUpcoming() {
   const _uBar = document.getElementById('u-981a-bar');
   if (_u981aChips.length > 0) {
     _uBar.style.display = 'flex';
-    _uBar.innerHTML = `<span class="etf981a-bar-lbl">📊 成分股（${_u981aChips.length}）：</span>`
+    _uBar.innerHTML = `<span class="etf981a-bar-lbl"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="5" y="11" width="3.5" height="7"/><rect x="10.5" y="6" width="3.5" height="12"/><rect x="16" y="9" width="3.5" height="9"/></svg> 成分股（${_u981aChips.length}）：</span>`
       + _u981aChips.map(r => {
           const c = String(r['公司代號']||'').trim();
           const hasFut = FUTURES.has(c);
@@ -2856,7 +2904,7 @@ function renderUpcoming() {
   // 添加表格圖例
   const uLegendHtml = `<div class="table-legend">
     <div class="legend-item">
-      <span class="legend-text"><b style="color:#1e3a5f;font-weight:800">粗體名稱</b> = 有個股期</span>
+      <span class="legend-text"><b style="color:#d1d4dc;font-weight:800">粗體名稱</b> = 有個股期</span>
     </div>
     <div class="legend-item">
       <span class="legend-dot legend-orange"></span>
@@ -2888,18 +2936,18 @@ function renderUpcoming() {
     const wHtmlU = isWarrantU ? `${mkt ? '<br>' : ''}<span class="tag-warrant">可發行權證</span>` : '';
     const subj = (r['主旨'] || '').replace(/"/g,'&quot;');
     const weightHtml = is981a ? `<span class="etf981a-weight">權重：${ETF981A[code]}</span>` : '';
-    const codeStyleU = isLarge ? 'color:#1d4ed8' : '';   // 藍色代號 = 大型股/金融
+    const codeStyleU = isLarge ? 'color:#2962ff' : '';   // 藍色代號 = 大型股/金融
     // 橘色名稱 = 成分股；粗體名稱 = 有個股期（可黑可橘，兩者獨立）
-    const nameElU = `<span style="${is981a?'color:#f97316;':''}${hasFut?'font-weight:800;':''}">${r['公司名稱']||''}</span>`;
+    const nameElU = `<span style="${is981a?'color:#ff9800;':''}${hasFut?'font-weight:800;':''}">${r['公司名稱']||''}</span>`;
     return `<tr>
       <td><strong style="${codeStyleU}">${r['公司代號']||''}</strong>${isNew ? '<span class="new-badge">NEW</span>' : ''}</td>
       <td>${nameElU}${weightHtml}</td>
       <td>${mktHtml}${wHtmlU}</td>
       <td>${r['說明財報期'] ? `<span class="period-tag">${r['說明財報期']}</span>` : ''}</td>
-      <td>${r['日期']||''}</td>
-      <td>${r['財報錨點']||''}</td>
-      <td style="color:#1d4ed8;font-weight:800">${r['即將法說日']||'—'}${upcomingHostTag(r)}</td>
+      <td style="color:#2962ff;font-weight:800">${r['即將法說日']||'—'}${upcomingHostTag(r)}</td>
       <td>${r['即將法說時間']||'—'}</td>
+      <td>${upcomingBroker(r)}</td>
+      <td>${peakVolDay(r['公司代號'])}</td>
       <td style="font-size:11px;max-width:130px;word-break:break-word">${r['即將法說地點']||'—'}</td>
       <td style="font-size:11px;max-width:150px;word-break:break-all">${_irLink(r['即將法說網站'])}</td>
       <td style="font-size:11px;max-width:150px;word-break:break-all">${_irLink(r['即將法說影音'])}</td>
@@ -2977,16 +3025,16 @@ document.addEventListener('DOMContentLoaded', () => {
       // 添加成分股差異圖例
       const diffLegendHtml = `<div style="margin-bottom:12px;padding:8px 0;display:flex;gap:20px;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">
-          <span style="background:#fff5ee;border:1px solid #fed7aa;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
-          <span style="color:#6b8fc7">橘色 = 即將法說</span>
+          <span style="background:#3a2a14;border:1px solid #ff9800;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
+          <span style="color:#787b86">橘色 = 即將法說</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">
-          <span style="background:#e0f2fe;border:1px solid #a5d8ff;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
-          <span style="color:#6b8fc7">淺藍色 = 待法說</span>
+          <span style="background:#16243a;border:1px solid #2962ff;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
+          <span style="color:#787b86">淺藍色 = 待法說</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">
-          <span style="background:#ecfdf5;border:1px solid #a7f3d0;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
-          <span style="color:#6b8fc7">綠色 = 歷史紀錄</span>
+          <span style="background:#14302a;border:1px solid #26a69a;width:16px;height:16px;border-radius:3px;display:inline-block;"></span>
+          <span style="color:#787b86">綠色 = 歷史紀錄</span>
         </div>
       </div>`;
       const existingDiffLegend = document.getElementById('etf981a-diff').querySelector('.etf-diff-legend');
@@ -2995,9 +3043,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       allItems.forEach(({code, type, prevW, currW}) => {
         let bg;
-        if      (upcomingSet.has(code)) { bg='#fff5ee'; }    // 即將法說 = 淺橘色背景
-        else if (pendingSet.has(code))  { bg='#e0f2fe'; }    // 待法說 = 淺藍色背景
-        else if (histSet.has(code))     { bg='#ecfdf5'; }    // 歷史紀錄 = 淡綠色背景
+        if      (upcomingSet.has(code)) { bg='#3a2a14'; }    // 即將法說 = 淺橘色背景
+        else if (pendingSet.has(code))  { bg='#16243a'; }    // 待法說 = 淺藍色背景
+        else if (histSet.has(code))     { bg='#14302a'; }    // 歷史紀錄 = 淡綠色背景
         else                            { bg='#fff'; }        // 其他 = 白色背景
         const prefix = type==='add' ? '＋' : type==='remove' ? '－' : type==='change' ? '↕' : '＝';
         const name = nameMap[code] || '';
@@ -3007,39 +3055,39 @@ document.addEventListener('DOMContentLoaded', () => {
         tr.style.background = bg;
         tr.style.fontWeight = textWeight;
         // 計算差異欄
-        let deltaCell = '<td style="text-align:center;color:#cbd5e1">—</td>';
+        let deltaCell = '<td style="text-align:center;color:#5d606b">—</td>';
         if (type === 'change') {
           const pv = parseFloat((prevW||'').replace('%',''));
           const cv = parseFloat((currW||'').replace('%',''));
           if (!isNaN(pv) && !isNaN(cv)) {
             const d = Math.round((cv - pv) * 100) / 100;
             const sign = d > 0 ? '+' : '';
-            const dc = d > 0 ? '#f87171' : '#16a34a';
+            const dc = d > 0 ? '#f7525f' : '#26a69a';
             const arrow = d > 0 ? '↑' : '↓';
             deltaCell = `<td style="text-align:center;color:${dc};font-weight:${textWeight};white-space:nowrap">${arrow} ${sign}${d.toFixed(2)}%</td>`;
           }
         } else if (type === 'add') {
-          deltaCell = `<td style="text-align:center;color:#f87171;font-weight:${textWeight}">NEW</td>`;
+          deltaCell = `<td style="text-align:center;color:#f7525f;font-weight:${textWeight}">NEW</td>`;
         } else if (type === 'remove') {
-          deltaCell = `<td style="text-align:center;color:#16a34a;font-weight:${textWeight}">OUT</td>`;
+          deltaCell = `<td style="text-align:center;color:#26a69a;font-weight:${textWeight}">OUT</td>`;
         }
         // 張數 = 股數 / 1000（OUT沒有今日持股、NEW沒有前日持股 → —）
         const shr  = ETF981A_SHARES[code];
         const pshr = ETF981A_PREV_SHARES[code];
         const lotCell = (type !== 'remove' && shr != null)
           ? `<td style="text-align:right;font-size:11px;font-variant-numeric:tabular-nums">${(shr/1000).toLocaleString('en-US',{maximumFractionDigits:3})} 張</td>`
-          : `<td style="text-align:right;color:#cbd5e1">—</td>`;
+          : `<td style="text-align:right;color:#5d606b">—</td>`;
         const prevLotCell = (type !== 'add' && pshr != null)
           ? `<td style="text-align:right;font-size:11px;font-variant-numeric:tabular-nums;opacity:.75">${(pshr/1000).toLocaleString('en-US',{maximumFractionDigits:3})} 張</td>`
-          : `<td style="text-align:right;color:#cbd5e1">—</td>`;
+          : `<td style="text-align:right;color:#5d606b">—</td>`;
         // 張數差異 = (今日股數 - 前日股數) / 1000
-        let lotsDeltaCell = `<td style="text-align:center;color:#cbd5e1">—</td>`;
+        let lotsDeltaCell = `<td style="text-align:center;color:#5d606b">—</td>`;
         if (shr != null && pshr != null) {
           const d = (shr - pshr) / 1000;
           if (d === 0) {
-            lotsDeltaCell = `<td style="text-align:center;color:#64748b;white-space:nowrap">＝ 0</td>`;
+            lotsDeltaCell = `<td style="text-align:center;color:#787b86;white-space:nowrap">＝ 0</td>`;
           } else {
-            const dc = d > 0 ? '#f87171' : '#16a34a';
+            const dc = d > 0 ? '#f7525f' : '#26a69a';
             const arrow = d > 0 ? '↑' : '↓';
             const sign = d > 0 ? '+' : '';
             lotsDeltaCell = `<td style="text-align:center;color:${dc};font-weight:${textWeight};white-space:nowrap">${arrow} ${sign}${d.toLocaleString('en-US',{maximumFractionDigits:3})} 張</td>`;
@@ -3053,7 +3101,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const currRatioCell = currRatio != null
           ? `<td style="text-align:right;font-size:11px;font-variant-numeric:tabular-nums">${currRatio.toFixed(4)}%</td>`
-          : `<td style="text-align:right;color:#cbd5e1">—</td>`;
+          : `<td style="text-align:right;color:#5d606b">—</td>`;
         // 代號/名稱可點 → 跳到該股個股頁（僅當該股有財報資料時）
         const hasDetail = !!companies[code];
         const codeInner = hasDetail ? `<span class="etf-link" onclick="selectCompany('${code}')">${code}</span>` : code;
