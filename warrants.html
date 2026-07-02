@@ -94,7 +94,7 @@ function renderStock(data, code){
       <span class="tag">可買權證（挑過）</span>
     </div>
     <div class="meta">
-      全市場・嚴格門檻（當天有成交量<span class="sep">・</span>買賣價差比≤3%<span class="sep">・</span>|價內外|≤20%<span class="sep">・</span>剩餘90~180天<span class="sep">・</span>槓桿3~7）
+      全市場・嚴格門檻（當天有成交量<span class="sep">・</span>買賣價差比≤3%<span class="sep">・</span>|價內外|≤20%<span class="sep">・</span>剩餘90~180天）
       依 <b>差槓比</b> 由小到大排（越小越划算）　資料時間：<b>${esc(asOf)}</b><br>
       <span class="links"><a href="${LIVE(code)}" target="_blank" rel="noopener">全部發行商即時 →</a>
       <a href="${SMART(code)}" target="_blank" rel="noopener">元大智慧選即時 →</a>
@@ -107,16 +107,20 @@ function renderStock(data, code){
     document.title = `${code} ${uname}｜可買權證`;
     return;
   }
+  // 直接對照：標的每動 1 tick 權證漲多少 vs 當天 theta 損耗 → 包不包得過
+  const fx = x => (x==null||x==='') ? '—' : x;
   const tdCell = w => {
-    if(w.td==null) return '—';
-    const pct = w.tdp!=null ? ` <small>(${num(w.tdp,'%')})</small>` : '';
-    let tk = '';
-    if(w.tkn!=null){
-      const cls = w.tkn<=1 ? 'ok' : (w.tkn<=2 ? 'mid' : 'bad');
-      const tip = `標的漲 ${w.tkn} 檔(每檔 ${w.tk} 元)可抵掉當天 theta`+(w.tkn<=1?'：漲一檔就夠':'');
-      tk = ` <span class="tk ${cls}" title="${esc(tip)}">${num(w.tkn)}檔</span>`;
-    }
-    return `${num(w.td)}元${pct}${tk}`;
+    if(w.gpt==null || w.thabs==null) return '—';
+    const isCall = String(w.typ||'').includes('購');
+    const dir = isCall ? '漲' : '跌';   // 認售需標的「跌」才對持有者有利
+    const cover = (w.net!=null && w.net>=0);
+    const pill = w.net==null ? '' : (cover
+      ? `<span class="tk ok">✓ 剩 +${fx(w.net)}</span>`
+      : `<span class="tk bad">✗ 缺 ${fx(Math.abs(w.net))}</span>`);
+    const tip = `標的每${dir} 1 tick（${fx(w.tk)} 元），權證 +${fx(w.gpt)} 元　vs　當天 theta −${fx(w.thabs)} 元　→ `
+      + (cover ? `包得過（還剩 +${fx(w.net)}）` : `包不過（還差 ${fx(Math.abs(w.net))}）`)
+      + `　｜換算：需標的${dir} ${fx(w.td)} 元 = ${fx(w.tkn)} 檔`;
+    return `<span class="ivwatch" title="${esc(tip)}">每tick <b>+${fx(w.gpt)}</b><span class="sl2">vs</span>θ <b>−${fx(w.thabs)}</b></span> ${pill}`;
   };
   const rows = picks.map(w=>{
     const isCall = String(w.typ||'').includes('購');
@@ -140,14 +144,14 @@ function renderStock(data, code){
       <thead><tr>
         <th>權證</th><th>類型</th><th>發行商</th><th>成交價</th><th>成交量</th>
         <th>買賣價差比</th><th>槓桿</th><th title="買賣價差比÷實質槓桿，越小越划算">差槓比 ▾</th>
-        <th>價內外</th><th title="每天時間價值損耗換算成標的股價(|theta|÷delta)，及需標的漲幾檔才抵得過">每日時間損耗 / 檔</th>
+        <th>價內外</th><th title="標的每動1個tick權證漲多少(|delta|×tick) 對照 當天theta損耗；✓包過=前者≥後者。滑鼠移上看完整算式">1tick vs theta</th>
         <th>剩餘</th><th title="發行商掛的買進/賣出隱波；箭頭為相對上次觀測變動。滑鼠移上看歷史，抓偷調隱波">隱波 買/賣</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div class="foot">差槓比 = 買賣價差比 ÷ 實質槓桿（越小＝用越低的價差成本換到越高槓桿）。
-    每日時間損耗 = |theta| ÷ delta（delta 已含行使比例），即標的須上漲多少元才能打平當天 theta；後面「N 檔」= 換算成標的的最小跳動單位（tick）數，
-    <span class="tk ok">綠</span> ≤1 檔＝標的漲一檔就抵得過當天時間價值損耗、<span class="tk mid">黃</span> 1~2 檔、<span class="tk bad">紅</span> &gt;2 檔。
+    <div class="foot">差槓比 = 買賣價差比 ÷ 實質槓桿（越小＝用越低的價差成本換到越高槓桿）；本表<b>依差槓比由小到大排</b>、不設槓桿硬門檻。
+    「1tick vs theta」= 標的每動 1 個 tick 權證漲多少（|delta|×tick，delta 已含行使比例）對照 當天 theta 損耗（|theta|）：
+    <span class="tk ok">✓ 剩</span> 代表標的往有利方向動一檔就<b>包得過</b>當天時間價值損耗、<span class="tk bad">✗ 缺</span> 代表還差多少（認購看漲、認售看跌）。滑鼠移上看完整算式與檔數換算。
     隱波「買/賣」= 發行商掛的買進/賣出隱含波動率；▲▼ 為買進隱波相對上次觀測的變動，滑鼠移上顯示歷次變動紀錄（抓發行商偷調隱波）。每天跑會累積軌跡。</div>`;
   document.title = `${code} ${uname}｜可買權證（${picks.length}）`;
 }

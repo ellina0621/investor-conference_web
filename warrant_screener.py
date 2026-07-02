@@ -43,7 +43,7 @@ COLUMNS = [
 #   require_volume : 只留「當天有成交量」的權證（成交量>0）
 PRESETS = {
     "strict": dict(spread_max=3.0,  inout_max=20.0, period_min=90, period_max=180,
-                   lev_min=3.0, lev_max=7.0, require_volume=True),
+                   lev_min=None, lev_max=None, require_volume=True),  # 不設槓桿硬門檻，改由差槓比排序主導
     "medium": dict(spread_max=5.0,  inout_max=15.0, period_min=30, period_max=180,
                    lev_min=2.5, lev_max=8.0, require_volume=True),
     "loose":  dict(spread_max=None, inout_max=None, period_min=20, period_max=None,
@@ -175,11 +175,16 @@ def _derive(w: dict) -> dict:
     #   即「標的要漲多少元才能打平當天 theta」。
     td = (abs(tht) / abs(dlt)) if (tht is not None and dlt not in (None, 0)) else None
     tdp = (td / obj * 100) if (td is not None and obj not in (None, 0)) else None  # %/天
-    # 換成標的的「檔數」：td / 一個 tick。tkn<=1 代表標的漲一檔就抵得過當天 theta。
+    # 換成標的的「檔數」：td / 一個 tick。tkn<=1 代表標的往有利方向動一檔就抵得過當天 theta。
     tick = _tw_tick(obj)
     tkn = (td / tick) if (td is not None and tick) else None
+    # 直接對照：每動 1 tick 權證漲多少(|delta|×tick) vs 當天 theta 損耗(|theta|)，淨剩 = 前-後
+    gpt = (abs(dlt) * tick) if (dlt is not None and tick) else None   # 每 1 tick 權證漲多少(元)
+    thabs = abs(tht) if tht is not None else None                     # 當天 theta 損耗(元)
+    net = (gpt - thabs) if (gpt is not None and thabs is not None) else None  # 淨剩(>0=包得過)
     return {"sl": _round(sl, 3), "td": _round(td, 2), "tdp": _round(tdp, 3),
-            "tk": tick, "tkn": _round(tkn, 2)}
+            "tk": tick, "tkn": _round(tkn, 2),
+            "gpt": _round(gpt, 4), "thabs": _round(thabs, 4), "net": _round(net, 4)}
 
 
 def _slim(w: dict, issuer_map: dict) -> dict:
@@ -200,7 +205,10 @@ def _slim(w: dict, issuer_map: dict) -> dict:
         "td":   d["td"],                                       # 每日時間價值換算標的(元/天)
         "tdp":  d["tdp"],                                      # 同上(%/天)
         "tk":   d["tk"],                                       # 標的 tick 大小
-        "tkn":  d["tkn"],                                      # 抵掉當天 theta 需幾檔(≤1=漲一檔即可)
+        "tkn":  d["tkn"],                                      # 抵掉當天 theta 需幾檔(≤1=動一檔即可)
+        "gpt":  d["gpt"],                                      # 每動1tick權證漲多少(元)
+        "thabs":d["thabs"],                                    # 當天theta損耗(元)
+        "net":  d["net"],                                      # 淨剩=每tick漲-theta(>0=包過)
         "per":  w.get("FLD_PERIOD"),                           # 剩餘天數
         "end":  w.get("FLD_DUR_END"),                          # 到期日
         "iv":   w.get("FLD_YUANTA_IV"),                        # 元大隱波
