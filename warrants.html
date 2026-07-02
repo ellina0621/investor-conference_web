@@ -41,6 +41,24 @@
   .tk.ok{background:rgba(38,166,154,.18);color:#26a69a;}
   .tk.mid{background:rgba(255,152,0,.16);color:#e0a44d;}
   .tk.bad{background:rgba(229,57,53,.16);color:#ef5350;}
+  .wrow{cursor:pointer;} .wrow:hover{background:var(--surface);}
+  .wrow .caret{display:inline-block;color:var(--muted);font-size:10px;margin-right:5px;transition:transform .15s;}
+  .wrow.open .caret{transform:rotate(90deg);color:var(--accent);}
+  .wrow.open{background:var(--surface2);}
+  .drow > td{padding:0;border-bottom:1px solid var(--border);background:var(--bg2);}
+  .qd{padding:14px 18px;}
+  .qd-head{font-size:12.5px;color:var(--muted);margin-bottom:12px;}
+  .qd-head b{color:var(--text-strong);font-size:14px;}
+  .qd-ok{color:var(--put);font-weight:700;margin-left:6px;}
+  .qd-warn{color:#ef5350;font-weight:700;margin-left:6px;}
+  .qd-none{padding:16px 18px;color:var(--muted);font-size:13px;}
+  .qd-bars{display:flex;gap:14px;align-items:flex-end;height:130px;}
+  .qd-bar{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;width:56px;}
+  .qd-track{width:26px;height:80px;display:flex;align-items:flex-end;background:rgba(255,255,255,.04);border-radius:3px;}
+  .qd-fill{width:100%;background:var(--accent);border-radius:3px 3px 0 0;}
+  .qd-fill.z{background:#ef5350;}
+  .qd-v{font-size:12px;font-weight:700;color:var(--text);margin-top:5px;} .qd-v.z{color:#ef5350;}
+  .qd-d{font-size:11px;color:var(--muted);margin-top:2px;}
   .ivwatch{cursor:help;border-bottom:1px dotted var(--border);}
   .ivwatch .sl2{color:var(--muted);margin:0 2px;}
   .up{color:var(--call);font-weight:700;} .dn{color:var(--put);font-weight:700;}
@@ -84,6 +102,33 @@ function ivCell(w){
   return `<span class="ivwatch" title="${esc(title)}">${cur}${arrow}</span>`;
 }
 
+// 點開的明細：近5交易日成交量（張）長條 + 平均 + 沒交易日
+function detailCell(w){
+  const q = w.q;
+  if(!q) return `<div class="qd-none">無 TWSE 上市量能資料（此權證多為上櫃 7 開頭，請點上方「全部發行商即時」查）</div>`;
+  const max = Math.max.apply(null, q.l.concat([1]));
+  const bars = q.d.map((dt,i)=>{
+    const v = q.l[i], zero = (v===0);
+    const h = zero ? 3 : Math.max(6, Math.round(v/max*100));
+    return `<div class="qd-bar" title="${esc(dt)}：${zero?'完全沒交易':v+' 張'}">
+      <div class="qd-track"><div class="qd-fill${zero?' z':''}" style="height:${h}%"></div></div>
+      <div class="qd-v${zero?' z':''}">${zero?'0':v}</div><div class="qd-d">${esc(dt)}</div></div>`;
+  }).join('');
+  const zt = q.z.length
+    ? `<span class="qd-warn">近5日有 ${q.z.length} 天完全沒交易：${q.z.join('、')}</span>`
+    : `<span class="qd-ok">近5日天天有量 ✓</span>`;
+  return `<div class="qd">
+    <div class="qd-head">近5交易日成交量（張）　平均 <b>${q.avg}</b> 張/日　有量 ${q.td}/5 天　${zt}</div>
+    <div class="qd-bars">${bars}</div></div>`;
+}
+function toggleDetail(tr){
+  const d = tr.nextElementSibling;
+  if(!d || !d.classList.contains('drow')) return;
+  const open = d.style.display==='none' || !d.style.display;
+  d.style.display = open ? 'table-row' : 'none';
+  tr.classList.toggle('open', open);
+}
+
 function renderStock(data, code){
   const picks = (data.picks||{})[code] || [];
   const uname = picks.length ? (picks[0].u||'') : '';
@@ -125,8 +170,8 @@ function renderStock(data, code){
   };
   const rows = picks.map(w=>{
     const isCall = String(w.typ||'').includes('購');
-    return `<tr>
-      <td class="id"><b>${esc(w.id)}</b><div class="nm">${esc(w.nm)}</div></td>
+    return `<tr class="wrow" onclick="toggleDetail(this)" title="點我看近5交易日成交量明細">
+      <td class="id"><span class="caret">▸</span><b>${esc(w.id)}</b><div class="nm">${esc(w.nm)}</div></td>
       <td><span class="type ${isCall?'call':'put'}">${esc(w.typ)}</span></td>
       <td>${esc(w.iss)}</td>
       <td class="r">${num(w.px)}</td>
@@ -138,7 +183,8 @@ function renderStock(data, code){
       <td class="r">${tdCell(w)}</td>
       <td class="r">${num(w.per,' 天')}</td>
       <td class="r">${ivCell(w)}</td>
-    </tr>`;
+    </tr>
+    <tr class="drow" style="display:none"><td colspan="12">${detailCell(w)}</td></tr>`;
   }).join('');
   document.getElementById('app').innerHTML = head + `
     <table>

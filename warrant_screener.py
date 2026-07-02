@@ -299,8 +299,36 @@ def _save_hist(hist: dict):
         json.dump(hist, f, ensure_ascii=False, separators=(",", ":"))
 
 
+def _attach_quote_history(picks, verbose=True):
+    """把近 5 交易日成交量（張）掛到每檔『認購』pick（TWSE 0999 僅認購）。"""
+    try:
+        import warrant_quote_history as wq
+    except Exception as e:
+        if verbose:
+            print(f"  [警告] 量能歷史模組載入失敗，略過：{e}")
+        return
+    call_ids = [w["id"] for ws in picks.values() for w in ws if "購" in str(w.get("typ", ""))]
+    if not call_ids:
+        return
+    try:
+        wq.download_recent(5, verbose=verbose)
+        roll = wq.rolling_by_code(call_ids, n=5)
+    except Exception as e:
+        if verbose:
+            print(f"  [警告] 量能歷史計算失敗，略過：{e}")
+        return
+    for ws in picks.values():
+        for w in ws:
+            r = roll.get(w["id"])
+            if r and r["present"]:   # 只掛「TWSE 上市」查得到的（上櫃 7 開頭查無→不掛，避免誤顯示全 0）
+                # 短鍵：d=日期(MMDD) l=每日張數 avg=平均張 z=沒交易日 td=有交易天數
+                w["q"] = {"d": [x[4:] for x in r["dates"]], "l": r["lots"],
+                          "avg": r["avg_lots"], "z": [x[4:] for x in r["zero_dates"]],
+                          "td": r["traded"]}
+
+
 def build_payload(codes, strictness: str = "strict") -> dict:
-    """組成要寫檔/內嵌的完整結構（含中繼資料）；同時累積隱波歷史。"""
+    """組成要寫檔/內嵌的完整結構（含中繼資料）；同時累積隱波歷史、掛近5日量能。"""
     ts = time.strftime("%Y-%m-%d %H:%M")
     hist = _load_hist()
     picks = screen_codes(codes, strictness, iv_hist=hist, ts=ts)
@@ -311,6 +339,9 @@ def build_payload(codes, strictness: str = "strict") -> dict:
             rec = hist.get(w["id"])
             if rec and rec["obs"]:
                 w["ivh"] = [[o[0], o[3], o[4]] for o in rec["obs"][-IVH_INLINE:]]
+    # 近 5 交易日成交量（張）→ 掛到認購 pick
+    print("下載/計算近5交易日成交量（TWSE 認購）…")
+    _attach_quote_history(picks)
     return {
         "as_of": ts,
         "strictness": strictness,
