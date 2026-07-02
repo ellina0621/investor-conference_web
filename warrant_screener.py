@@ -42,7 +42,7 @@ COLUMNS = [
 #   lev_min/max : |實質槓桿| 區間
 #   require_volume : 只留「當天有成交量」的權證（成交量>0）
 PRESETS = {
-    "strict": dict(spread_max=3.0,  inout_max=10.0, period_min=45, period_max=120,
+    "strict": dict(spread_max=3.0,  inout_max=20.0, period_min=90, period_max=180,
                    lev_min=3.0, lev_max=7.0, require_volume=True),
     "medium": dict(spread_max=5.0,  inout_max=15.0, period_min=30, period_max=180,
                    lev_min=2.5, lev_max=8.0, require_volume=True),
@@ -150,8 +150,20 @@ def _round(x, n=4):
     return None if x is None else round(x, n)
 
 
+def _tw_tick(price):
+    """台股股票最小升降單位（tick）。"""
+    if price is None or price <= 0:
+        return None
+    if price < 10:   return 0.01
+    if price < 50:   return 0.05
+    if price < 100:  return 0.1
+    if price < 500:  return 0.5
+    if price < 1000: return 1.0
+    return 5.0
+
+
 def _derive(w: dict) -> dict:
-    """計算衍生指標：差槓比、每日時間價值換算標的。"""
+    """計算衍生指標：差槓比、每日時間價值換算標的、抵掉 theta 需幾檔。"""
     spr = _num(w.get("FLD_BUY_SELL_RATE"))
     lev = _num(w.get("FLD_LEVERAGE"))
     dlt = _num(w.get("FLD_DELTA"))
@@ -159,10 +171,15 @@ def _derive(w: dict) -> dict:
     obj = _num(w.get("FLD_OBJ_TXN_PRICE"))
     # 差槓比 = 買賣價差比 / |實質槓桿|，越小越划算（低價差、高槓桿）
     sl = (spr / abs(lev)) if (spr is not None and lev not in (None, 0)) else None
-    # 每日時間價值損耗換算成標的：|theta| / |delta|（元/天）；delta 已含行使比例，與 theta 同基準
+    # 每日時間價值損耗換算成標的：|theta| / |delta|（元/天）；delta 已含行使比例，與 theta 同基準。
+    #   即「標的要漲多少元才能打平當天 theta」。
     td = (abs(tht) / abs(dlt)) if (tht is not None and dlt not in (None, 0)) else None
     tdp = (td / obj * 100) if (td is not None and obj not in (None, 0)) else None  # %/天
-    return {"sl": _round(sl, 3), "td": _round(td, 2), "tdp": _round(tdp, 3)}
+    # 換成標的的「檔數」：td / 一個 tick。tkn<=1 代表標的漲一檔就抵得過當天 theta。
+    tick = _tw_tick(obj)
+    tkn = (td / tick) if (td is not None and tick) else None
+    return {"sl": _round(sl, 3), "td": _round(td, 2), "tdp": _round(tdp, 3),
+            "tk": tick, "tkn": _round(tkn, 2)}
 
 
 def _slim(w: dict, issuer_map: dict) -> dict:
@@ -182,6 +199,8 @@ def _slim(w: dict, issuer_map: dict) -> dict:
         "sl":   d["sl"],                                       # 差槓比(越小越划算)
         "td":   d["td"],                                       # 每日時間價值換算標的(元/天)
         "tdp":  d["tdp"],                                      # 同上(%/天)
+        "tk":   d["tk"],                                       # 標的 tick 大小
+        "tkn":  d["tkn"],                                      # 抵掉當天 theta 需幾檔(≤1=漲一檔即可)
         "per":  w.get("FLD_PERIOD"),                           # 剩餘天數
         "end":  w.get("FLD_DUR_END"),                          # 到期日
         "iv":   w.get("FLD_YUANTA_IV"),                        # 元大隱波
