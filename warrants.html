@@ -178,19 +178,26 @@ function renderStock(data, code){
       <td class="r">${num(w.vol)}</td>
       <td class="r">${num(w.spr,'%')}</td>
       <td class="r">${num(w.lev)}</td>
+      <td class="r">${fx(w.de)}</td>
+      <td class="r">${fx(w.conv)}</td>
+      <td class="r">${(w.ovr==null||w.ovr==='')?'—':num(w.ovr,'%')}</td>
       <td class="r hi">${num(w.sl)}</td>
       <td class="r">${esc(w.io)||'—'}</td>
       <td class="r">${tdCell(w)}</td>
       <td class="r">${num(w.per,' 天')}</td>
       <td class="r">${ivCell(w)}</td>
     </tr>
-    <tr class="drow" style="display:none"><td colspan="12">${detailCell(w)}</td></tr>`;
+    <tr class="drow" style="display:none"><td colspan="15">${detailCell(w)}</td></tr>`;
   }).join('');
   document.getElementById('app').innerHTML = head + `
     <table>
       <thead><tr>
         <th>權證</th><th>類型</th><th>發行商</th><th>成交價</th><th>成交量</th>
-        <th>買賣價差比</th><th>槓桿</th><th title="買賣價差比÷實質槓桿，越小越划算">差槓比 ▾</th>
+        <th>買賣價差比</th><th>槓桿</th>
+        <th title="有效Δ：標的漲1元，權證漲幾元（已含行使比例）。理論Δ(0~1)＝此值÷行使比例">Δ</th>
+        <th title="每單位權證可換多少標的股數。行使比例×理論Δ＝有效Δ；但本表 Δ 欄已是有效Δ，勿再相乘">行使比例</th>
+        <th title="流通在外量佔發行量比例(%)；越高代表籌碼多在外、發行商回收空間小">流通在外%</th>
+        <th title="買賣價差比÷實質槓桿，越小越划算">差槓比 ▾</th>
         <th>價內外</th><th title="標的每動1個tick權證漲多少(|delta|×tick) 對照 當天theta損耗；✓包過=前者≥後者。滑鼠移上看完整算式">1tick vs theta</th>
         <th>剩餘</th><th title="發行商掛的買進/賣出隱波；箭頭為相對上次觀測變動。滑鼠移上看歷史，抓偷調隱波">隱波 買/賣</th>
       </tr></thead>

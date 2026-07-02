@@ -33,6 +33,7 @@ COLUMNS = [
     "FLD_IV_BUY_PRICE", "FLD_IV_SELL_PRICE",
     "FLD_DUR_END", "FLD_PERIOD", "FLD_N_STRIKE_PRC", "FLD_IN_OUT",
     "FLD_OBJ_TXN_PRICE", "FLD_DELTA", "FLD_THETA", "FLD_LEVERAGE", "FLD_N_UND_CONVER",
+    "FLD_OUT_VOL_RATE",
 ]
 
 # 門檻預設（可在此調整）
@@ -201,6 +202,9 @@ def _slim(w: dict, issuer_map: dict) -> dict:
         "spr":  w.get("FLD_BUY_SELL_RATE"),                    # 買賣價差比(%)
         "io":   w.get("FLD_IN_OUT"),                           # 價內外
         "lev":  w.get("FLD_LEVERAGE"),                         # 實質槓桿
+        "de":   w.get("FLD_DELTA"),                            # 有效Δ(標的漲1元權證漲幾元；已含行使比例)
+        "conv": w.get("FLD_N_UND_CONVER"),                     # 行使比例
+        "ovr":  w.get("FLD_OUT_VOL_RATE"),                     # 流通在外比例(%)
         "sl":   d["sl"],                                       # 差槓比(越小越划算)
         "td":   d["td"],                                       # 每日時間價值換算標的(元/天)
         "tdp":  d["tdp"],                                      # 同上(%/天)
