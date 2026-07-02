@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>可買權證篩選（全市場快照）</title>
+<style>
+  :root{
+    --bg:#131722; --bg2:#0e1117; --surface:#1e222d; --surface2:#242833;
+    --border:#2a2e39; --text:#d1d4dc; --text-strong:#f0f3fa; --muted:#787b86;
+    --accent:#2962ff; --warrant:#e0a44d; --call:#ef5350; --put:#26a69a;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;font-size:14px;}
+  a{color:var(--accent);text-decoration:none;} a:hover{text-decoration:underline;}
+  .wrap{max-width:1080px;margin:0 auto;padding:22px 18px 60px;}
+  .top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px;}
+  .top .code{color:var(--accent);font-size:26px;font-weight:800;}
+  .top .name{font-size:20px;font-weight:700;color:var(--text-strong);}
+  .top .tag{background:rgba(255,152,0,.14);color:var(--warrant);border:1px solid rgba(255,152,0,.3);
+            padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;}
+  .meta{font-size:12px;color:var(--muted);line-height:1.7;margin:8px 0 18px;}
+  .meta b{color:var(--text);} .meta .sep{margin:0 4px;color:var(--border);}
+  .links a{margin-right:14px;font-weight:700;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{position:sticky;top:0;background:var(--surface2);color:var(--muted);font-weight:700;
+     text-align:right;padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap;cursor:default;}
+  th:nth-child(1),th:nth-child(2),th:nth-child(3){text-align:left;}
+  td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.05);color:var(--text);}
+  td.r{text-align:right;font-variant-numeric:tabular-nums;}
+  td.hi{color:#ffb74d;font-weight:800;background:rgba(255,152,0,.07);}
+  td small{color:var(--muted);font-weight:500;}
+  tbody tr:hover{background:var(--surface);}
+  .id b{color:var(--text-strong);font-weight:700;} .id .nm{font-size:11px;color:var(--muted);}
+  .type{padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700;}
+  .type.call{background:rgba(229,57,53,.16);color:var(--call);}
+  .type.put{background:rgba(38,166,154,.16);color:var(--put);}
+  .empty{padding:40px;text-align:center;color:var(--muted);font-size:15px;}
+  .cards{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+        padding:12px 16px;min-width:150px;transition:border-color .12s;}
+  .card:hover{border-color:var(--accent);}
+  .card .c{color:var(--accent);font-weight:800;font-size:16px;}
+  .card .n{color:var(--text-strong);font-weight:600;} .card .k{color:var(--muted);font-size:12px;margin-top:4px;}
+  .back{font-size:13px;} .foot{margin-top:22px;font-size:11px;color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="empty">載入中…</div></div>
+<script>
+const LIVE   = c => `https://www.warrantwin.com.tw/eyuanta/Warrant/Search.aspx?SID=${encodeURIComponent(c)}`;
+const SMART  = c => `https://www.warrantwin.com.tw/eyuanta/Warrant/SmartSearch.aspx?SID=${encodeURIComponent(c)}`;
+const qs = new URLSearchParams(location.search);
+const CODE = (qs.get('code')||'').trim();
+
+function num(s,suf){ s=String(s==null?'':s).trim(); if(s==='') return '—';
+  const n=Number(s); return (isFinite(n)?(Math.round(n*100)/100):s)+(suf||''); }
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function renderStock(data, code){
+  const picks = (data.picks||{})[code] || [];
+  const uname = picks.length ? (picks[0].u||'') : '';
+  const asOf = data.as_of || '—';
+  const head = `
+    <div class="top">
+      <span class="code">${esc(code)}</span>
+      <span class="name">${esc(uname)}</span>
+      <span class="tag">可買權證（挑過）</span>
+    </div>
+    <div class="meta">
+      全市場・嚴格門檻（當天有成交量<span class="sep">・</span>買賣價差比≤3%<span class="sep">・</span>|價內外|≤10%<span class="sep">・</span>剩餘45~120天<span class="sep">・</span>槓桿3~7）
+      依 <b>差槓比</b> 由小到大排（越小越划算）　資料時間：<b>${esc(asOf)}</b><br>
+      <span class="links"><a href="${LIVE(code)}" target="_blank" rel="noopener">全部發行商即時 →</a>
+      <a href="${SMART(code)}" target="_blank" rel="noopener">元大智慧選即時 →</a>
+      <a class="back" href="warrants.html">← 所有標的</a></span>
+    </div>`;
+  if(!picks.length){
+    document.getElementById('app').innerHTML = head +
+      `<div class="empty">此門檻下無合格權證（可能沒有當天成交量、或都不符篩選條件）。<br>
+       點上方「全部發行商即時」看 warrantwin 完整清單。</div>`;
+    document.title = `${code} ${uname}｜可買權證`;
+    return;
+  }
+  const tdCell = w => (w.td==null ? '—' : `${num(w.td)}元${w.tdp!=null?` <small>(${num(w.tdp,'%')})</small>`:''}`);
+  const rows = picks.map(w=>{
+    const isCall = String(w.typ||'').includes('購');
+    return `<tr>
+      <td class="id"><b>${esc(w.id)}</b><div class="nm">${esc(w.nm)}</div></td>
+      <td><span class="type ${isCall?'call':'put'}">${esc(w.typ)}</span></td>
+      <td>${esc(w.iss)}</td>
+      <td class="r">${num(w.px)}</td>
+      <td class="r">${num(w.vol)}</td>
+      <td class="r">${num(w.spr,'%')}</td>
+      <td class="r">${num(w.lev)}</td>
+      <td class="r hi">${num(w.sl)}</td>
+      <td class="r">${esc(w.io)||'—'}</td>
+      <td class="r">${tdCell(w)}</td>
+      <td class="r">${num(w.per,' 天')}</td>
+      <td class="r">${num(w.iv,'%')}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('app').innerHTML = head + `
+    <table>
+      <thead><tr>
+        <th>權證</th><th>類型</th><th>發行商</th><th>成交價</th><th>成交量</th>
+        <th>買賣價差比</th><th>槓桿</th><th title="買賣價差比÷實質槓桿，越小越划算">差槓比 ▾</th>
+        <th>價內外</th><th title="每天時間價值損耗換算成標的股價：|theta|÷delta">每日時間損耗</th>
+        <th>剩餘</th><th>隱波</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="foot">差槓比 = 買賣價差比 ÷ 實質槓桿（越小＝用越低的價差成本換到越高槓桿）。
+    每日時間損耗 = |theta| ÷ delta，即持有此權證每天的時間價值損耗，換算成「標的股價下跌多少元」，也是標的每天需上漲以打平的幅度。</div>`;
+  document.title = `${code} ${uname}｜可買權證（${picks.length}）`;
+}
+
+function renderLanding(data){
+  const picks = data.picks || {};
+  const codes = Object.keys(picks);
+  const asOf = data.as_of || '—';
+  const cards = codes.map(c=>{
+    const p=picks[c]; const uname=p.length?(p[0].u||''):'';
+    return `<a class="card" href="warrants.html?code=${encodeURIComponent(c)}">
+      <div class="c">${esc(c)}</div><div class="n">${esc(uname)}</div>
+      <div class="k">${p.length} 檔挑過的權證</div></a>`;
+  }).join('');
+  document.getElementById('app').innerHTML = `
+    <div class="top"><span class="name">可買權證篩選</span><span class="tag">全市場快照</span></div>
+    <div class="meta">即將法說標的中、通過嚴格門檻的可買權證。資料時間：<b>${esc(asOf)}</b></div>
+    ${codes.length? `<div class="cards">${cards}</div>` :
+      `<div class="empty">目前沒有任何標的通過門檻。</div>`}
+    <div class="foot">此頁與法說會網站分開維護：資料由 warrant_screener.py 產生 warrant_picks.json，本頁執行時讀取。</div>`;
+  document.title = '可買權證篩選（全市場快照）';
+}
+
+fetch('warrant_picks.json', {cache:'no-store'})
+  .then(r => { if(!r.ok) throw new Error('warrant_picks.json 讀取失敗'); return r.json(); })
+  .then(data => { if(CODE) renderStock(data, CODE); else renderLanding(data); })
+  .catch(err => {
+    document.getElementById('app').innerHTML =
+      `<div class="empty">無法載入 warrant_picks.json（${esc(err.message)}）。<br>
+       請確認已跑過 warrant_screener.py，且此頁是透過 http/GitHub Pages 開啟（非本機 file://）。
+       ${CODE?`<br><br><a href="${LIVE(CODE)}" target="_blank" rel="noopener">直接到 warrantwin 看 ${esc(CODE)} 即時 →</a>`:''}</div>`;
+  });
+</script>
+</body>
+</html>
