@@ -19,12 +19,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 QUOTE_DIR = os.path.join(_DIR, "權證行情")
-MI_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+MI_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"           # 上市（type=0999＝認購）
+TPEX_URL = "https://www.tpex.org.tw/www/zh-tw/warrant/wntQuts"            # 上櫃（POST type=Daily）
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"}
 LOTS = 1000  # 1 張 = 1000 股
 
 # 存進 CSV 的欄位（中文表頭，utf-8-sig 供 Excel）
-CSV_FIELDS = ["代號", "名稱", "收盤價", "成交股數", "成交張數", "成交筆數", "標的代號", "標的名稱"]
+CSV_FIELDS = ["市場", "代號", "名稱", "收盤價", "成交股數", "成交張數", "成交筆數", "標的代號", "標的名稱"]
 
 _session = requests.Session()
 _session.headers.update(HEADERS)
@@ -47,15 +48,14 @@ def last_n_trading_days(n=5, end=None):
     return days
 
 
-def _fetch_day(yyyymmdd):
-    """抓某日認購權證收盤行情，回傳 list[dict]（CSV_FIELDS 欄位）。非交易日回 None。"""
+def _fetch_twse_day(yyyymmdd):
+    """上市認購權證（TWSE type=0999）。非交易日回 None。"""
     r = _session.get(MI_URL, params={"date": yyyymmdd, "type": "0999", "response": "json"},
                      timeout=30, verify=False)
     r.raise_for_status()
     d = r.json()
     if d.get("stat") != "OK":
         return None
-    # 找權證資料表：欄位含「標的代號」且有 data
     table = None
     for t in d.get("tables", []):
         fields = t.get("fields") or []
@@ -66,22 +66,62 @@ def _fetch_day(yyyymmdd):
         return None
     out = []
     for row in table["data"]:
-        # row: ['',代號,名稱,成交股數,成交筆數,成交金額,開,高,低,收,漲跌,漲跌差,買價,買量,賣價,賣量,本益比,標的代號,標的名稱,標的收]
+        # ['',代號,名稱,成交股數,成交筆數,成交金額,開,高,低,收,...,標的代號(17),標的名稱(18),標的收(19)]
         code = str(row[1]).strip()
         if not code:
             continue
         shares = _to_int(row[3])
-        out.append({
-            "代號": code,
-            "名稱": str(row[2]).strip(),
-            "收盤價": str(row[9]).strip(),
-            "成交股數": shares,
-            "成交張數": round(shares / LOTS, 2),
-            "成交筆數": _to_int(row[4]),
-            "標的代號": str(row[17]).strip() if len(row) > 17 else "",
-            "標的名稱": str(row[18]).strip() if len(row) > 18 else "",
-        })
+        out.append({"市場": "上市", "代號": code, "名稱": str(row[2]).strip(),
+                    "收盤價": str(row[9]).strip(), "成交股數": shares,
+                    "成交張數": round(shares / LOTS, 2), "成交筆數": _to_int(row[4]),
+                    "標的代號": str(row[17]).strip() if len(row) > 17 else "",
+                    "標的名稱": str(row[18]).strip() if len(row) > 18 else ""})
     return out
+
+
+def _fetch_tpex_day(yyyymmdd):
+    """上櫃認購權證（TPEx wntQuts，只留名稱含「購」者）。查無回 []。"""
+    date_slash = f"{yyyymmdd[:4]}/{yyyymmdd[4:6]}/{yyyymmdd[6:8]}"
+    r = _session.post(TPEX_URL, data={"type": "Daily", "date": date_slash, "id": "", "response": "json"},
+                      timeout=30, verify=False)
+    r.raise_for_status()
+    d = r.json()
+    if str(d.get("stat", "")).lower() != "ok" or d.get("date") != yyyymmdd:
+        return []   # 非交易日或日期不符（避免拿到別天資料）
+    table = None
+    for t in d.get("tables", []):
+        if t.get("data"):
+            table = t
+            break
+    if not table:
+        return []
+    out = []
+    for row in table["data"]:
+        # [代號,名稱,開,高,低,收(5),漲跌,成交量股(7),成交筆數(8),成交金額,標的代號(10),標的名稱(11),...]
+        code = str(row[0]).strip()
+        name = str(row[1]).strip()
+        if not code or "購" not in name:   # 只認購
+            continue
+        shares = _to_int(row[7])
+        close = str(row[5]).strip()
+        out.append({"市場": "上櫃", "代號": code, "名稱": name,
+                    "收盤價": "" if close in ("---", "--") else close, "成交股數": shares,
+                    "成交張數": round(shares / LOTS, 2), "成交筆數": _to_int(row[8]),
+                    "標的代號": str(row[10]).strip() if len(row) > 10 else "",
+                    "標的名稱": str(row[11]).strip() if len(row) > 11 else ""})
+    return out
+
+
+def _fetch_day(yyyymmdd):
+    """某日認購權證收盤行情（上市+上櫃合併）。非交易日回 None。"""
+    twse = _fetch_twse_day(yyyymmdd)
+    if twse is None:
+        return None
+    try:
+        tpex = _fetch_tpex_day(yyyymmdd)
+    except Exception:
+        tpex = []
+    return twse + tpex
 
 
 def _csv_path(yyyymmdd):
