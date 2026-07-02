@@ -25,8 +25,12 @@
   .links a{margin-right:14px;font-weight:700;}
   table{width:100%;border-collapse:collapse;font-size:13px;}
   th{position:sticky;top:0;background:var(--surface2);color:var(--muted);font-weight:700;
-     text-align:right;padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap;cursor:default;}
+     text-align:right;padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
   th:nth-child(1),th:nth-child(2),th:nth-child(3){text-align:left;}
+  #wtable th{cursor:pointer;user-select:none;transition:color .1s;}
+  #wtable th:hover{color:var(--text);}
+  #wtable th.sorted{color:var(--text-strong);}
+  .sarrow{color:var(--accent);font-weight:800;}
   td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.05);color:var(--text);}
   td.r{text-align:right;font-variant-numeric:tabular-nums;}
   td.hi{color:#ffb74d;font-weight:800;background:rgba(255,152,0,.07);}
@@ -129,6 +133,86 @@ function toggleDetail(tr){
   tr.classList.toggle('open', open);
 }
 
+// ── 表格排序 ──────────────────────────────────────────────
+const fx = x => (x==null||x==='') ? '—' : x;
+function _n(s){ s=String(s==null?'':s).trim().replace(/,/g,''); if(s==='') return null;
+  const buf=[]; for(const c of s){ if((c>='0'&&c<='9')||c==='.'||c==='-') buf.push(c); else if(buf.length) break; }
+  const v=parseFloat(buf.join('')); return isFinite(v)?v:null; }
+function tdCell(w){
+  if(w.gpt==null || w.thabs==null) return '—';
+  const isCall = String(w.typ||'').includes('購');
+  const dir = isCall ? '漲' : '跌';   // 認售需標的「跌」才對持有者有利
+  const cover = (w.net!=null && w.net>=0);
+  const pill = w.net==null ? '' : (cover
+    ? `<span class="tk ok">✓ 剩 +${fx(w.net)}</span>`
+    : `<span class="tk bad">✗ 缺 ${fx(Math.abs(w.net))}</span>`);
+  const tip = `標的每${dir} 1 tick（${fx(w.tk)} 元），權證 +${fx(w.gpt)} 元　vs　當天 theta −${fx(w.thabs)} 元　→ `
+    + (cover ? `包得過（還剩 +${fx(w.net)}）` : `包不過（還差 ${fx(Math.abs(w.net))}）`)
+    + `　｜換算：需標的${dir} ${fx(w.td)} 元 = ${fx(w.tkn)} 檔`;
+  return `<span class="ivwatch" title="${esc(tip)}">每tick <b>+${fx(w.gpt)}</b><span class="sl2">vs</span>θ <b>−${fx(w.thabs)}</b></span> ${pill}`;
+}
+function rowHtml(w){
+  const isCall = String(w.typ||'').includes('購');
+  return `<tr class="wrow" onclick="toggleDetail(this)" title="點我看近5交易日成交量明細">
+      <td class="id"><span class="caret">▸</span><b>${esc(w.id)}</b><div class="nm">${esc(w.nm)}</div></td>
+      <td><span class="type ${isCall?'call':'put'}">${esc(w.typ)}</span></td>
+      <td>${esc(w.iss)}</td>
+      <td class="r">${num(w.px)}</td>
+      <td class="r">${num(w.vol)}</td>
+      <td class="r">${num(w.spr,'%')}</td>
+      <td class="r">${num(w.lev)}</td>
+      <td class="r">${fx(w.de)}</td>
+      <td class="r">${fx(w.conv)}</td>
+      <td class="r">${(w.ovr==null||w.ovr==='')?'—':num(w.ovr,'%')}</td>
+      <td class="r hi">${num(w.sl)}</td>
+      <td class="r">${esc(w.io)||'—'}</td>
+      <td class="r">${tdCell(w)}</td>
+      <td class="r">${num(w.per,' 天')}</td>
+      <td class="r">${ivCell(w)}</td>
+    </tr>
+    <tr class="drow" style="display:none"><td colspan="15">${detailCell(w)}</td></tr>`;
+}
+// 欄位定義（順序對應表頭）：c=鍵 t=型別(n數字/s字串/io價內外/net淨剩/iv買IV) nat=首次點擊方向
+const SORTCOLS = [
+  {c:'id',t:'s',nat:'asc'},{c:'typ',t:'s',nat:'asc'},{c:'iss',t:'s',nat:'asc'},
+  {c:'px',t:'n',nat:'desc'},{c:'vol',t:'n',nat:'desc'},{c:'spr',t:'n',nat:'asc'},
+  {c:'lev',t:'n',nat:'desc'},{c:'de',t:'n',nat:'desc'},{c:'conv',t:'n',nat:'desc'},
+  {c:'ovr',t:'n',nat:'desc'},{c:'sl',t:'n',nat:'asc'},{c:'io',t:'io',nat:'asc'},
+  {c:'net',t:'net',nat:'desc'},{c:'per',t:'n',nat:'desc'},{c:'iv',t:'iv',nat:'desc'}
+];
+function _val(w, def){
+  if(def.t==='s') return String(w[def.c]==null?'':w[def.c]);
+  if(def.t==='net') return (w.net==null?null:w.net);
+  if(def.t==='iv') return _n(w.ivb);
+  if(def.t==='io'){ const v=_n(w.io); if(v==null) return null; return String(w.io).includes('價內')? -Math.abs(v): Math.abs(v); }
+  return _n(w[def.c]);
+}
+let WPICKS = [], WSORT = {col:'sl', asc:true};
+function setSort(c){
+  const def = SORTCOLS.find(d=>d.c===c); if(!def) return;
+  if(WSORT.col===c) WSORT.asc = !WSORT.asc;
+  else WSORT = {col:c, asc:(def.nat==='asc')};
+  renderRows();
+}
+function renderRows(){
+  const def = SORTCOLS.find(d=>d.c===WSORT.col) || SORTCOLS[10];
+  const asc = WSORT.asc, isStr = (def.t==='s');
+  const arr = WPICKS.slice().sort((a,b)=>{
+    const va=_val(a,def), vb=_val(b,def);
+    const na=(va==null||va===''), nb=(vb==null||vb==='');
+    if(na||nb) return na===nb?0:(na?1:-1);   // 空值一律排最後
+    const r = isStr ? String(va).localeCompare(String(vb),'zh-TW') : (va-vb);
+    return asc ? r : -r;
+  });
+  const tb = document.getElementById('wtbody');
+  if(tb) tb.innerHTML = arr.map(rowHtml).join('');
+  document.querySelectorAll('#wtable th[data-c]').forEach(th=>{
+    const on = th.getAttribute('data-c')===WSORT.col;
+    th.classList.toggle('sorted', on);
+    const ar = th.querySelector('.sarrow'); if(ar) ar.textContent = on ? (asc?' ▲':' ▼') : '';
+  });
+}
+
 function renderStock(data, code){
   const picks = (data.picks||{})[code] || [];
   const uname = picks.length ? (picks[0].u||'') : '';
@@ -153,60 +237,33 @@ function renderStock(data, code){
     document.title = `${code} ${uname}｜可買權證`;
     return;
   }
-  // 直接對照：標的每動 1 tick 權證漲多少 vs 當天 theta 損耗 → 包不包得過
-  const fx = x => (x==null||x==='') ? '—' : x;
-  const tdCell = w => {
-    if(w.gpt==null || w.thabs==null) return '—';
-    const isCall = String(w.typ||'').includes('購');
-    const dir = isCall ? '漲' : '跌';   // 認售需標的「跌」才對持有者有利
-    const cover = (w.net!=null && w.net>=0);
-    const pill = w.net==null ? '' : (cover
-      ? `<span class="tk ok">✓ 剩 +${fx(w.net)}</span>`
-      : `<span class="tk bad">✗ 缺 ${fx(Math.abs(w.net))}</span>`);
-    const tip = `標的每${dir} 1 tick（${fx(w.tk)} 元），權證 +${fx(w.gpt)} 元　vs　當天 theta −${fx(w.thabs)} 元　→ `
-      + (cover ? `包得過（還剩 +${fx(w.net)}）` : `包不過（還差 ${fx(Math.abs(w.net))}）`)
-      + `　｜換算：需標的${dir} ${fx(w.td)} 元 = ${fx(w.tkn)} 檔`;
-    return `<span class="ivwatch" title="${esc(tip)}">每tick <b>+${fx(w.gpt)}</b><span class="sl2">vs</span>θ <b>−${fx(w.thabs)}</b></span> ${pill}`;
-  };
-  const rows = picks.map(w=>{
-    const isCall = String(w.typ||'').includes('購');
-    return `<tr class="wrow" onclick="toggleDetail(this)" title="點我看近5交易日成交量明細">
-      <td class="id"><span class="caret">▸</span><b>${esc(w.id)}</b><div class="nm">${esc(w.nm)}</div></td>
-      <td><span class="type ${isCall?'call':'put'}">${esc(w.typ)}</span></td>
-      <td>${esc(w.iss)}</td>
-      <td class="r">${num(w.px)}</td>
-      <td class="r">${num(w.vol)}</td>
-      <td class="r">${num(w.spr,'%')}</td>
-      <td class="r">${num(w.lev)}</td>
-      <td class="r">${fx(w.de)}</td>
-      <td class="r">${fx(w.conv)}</td>
-      <td class="r">${(w.ovr==null||w.ovr==='')?'—':num(w.ovr,'%')}</td>
-      <td class="r hi">${num(w.sl)}</td>
-      <td class="r">${esc(w.io)||'—'}</td>
-      <td class="r">${tdCell(w)}</td>
-      <td class="r">${num(w.per,' 天')}</td>
-      <td class="r">${ivCell(w)}</td>
-    </tr>
-    <tr class="drow" style="display:none"><td colspan="15">${detailCell(w)}</td></tr>`;
-  }).join('');
+  WPICKS = picks; WSORT = {col:'sl', asc:true};   // 預設差槓比升冪
   document.getElementById('app').innerHTML = head + `
-    <table>
+    <table id="wtable">
       <thead><tr>
-        <th>權證</th><th>類型</th><th>發行商</th><th>成交價</th><th>成交量</th>
-        <th>買賣價差比</th><th>槓桿</th>
-        <th title="有效Δ：標的漲1元，權證漲幾元（已含行使比例）。理論Δ(0~1)＝此值÷行使比例">Δ</th>
-        <th title="每單位權證可換多少標的股數。行使比例×理論Δ＝有效Δ；但本表 Δ 欄已是有效Δ，勿再相乘">行使比例</th>
-        <th title="流通在外量佔發行量比例(%)；越高代表籌碼多在外、發行商回收空間小">流通在外%</th>
-        <th title="買賣價差比÷實質槓桿，越小越划算">差槓比 ▾</th>
-        <th>價內外</th><th title="標的每動1個tick權證漲多少(|delta|×tick) 對照 當天theta損耗；✓包過=前者≥後者。滑鼠移上看完整算式">1tick vs theta</th>
-        <th>剩餘</th><th title="發行商掛的買進/賣出隱波；箭頭為相對上次觀測變動。滑鼠移上看歷史，抓偷調隱波">隱波 買/賣</th>
+        <th data-c="id"   onclick="setSort('id')">權證<span class="sarrow"></span></th>
+        <th data-c="typ"  onclick="setSort('typ')">類型<span class="sarrow"></span></th>
+        <th data-c="iss"  onclick="setSort('iss')">發行商<span class="sarrow"></span></th>
+        <th data-c="px"   onclick="setSort('px')">成交價<span class="sarrow"></span></th>
+        <th data-c="vol"  onclick="setSort('vol')">成交量<span class="sarrow"></span></th>
+        <th data-c="spr"  onclick="setSort('spr')">買賣價差比<span class="sarrow"></span></th>
+        <th data-c="lev"  onclick="setSort('lev')">槓桿<span class="sarrow"></span></th>
+        <th data-c="de"   onclick="setSort('de')"   title="有效Δ：標的漲1元，權證漲幾元（已含行使比例）。理論Δ(0~1)＝此值÷行使比例">Δ<span class="sarrow"></span></th>
+        <th data-c="conv" onclick="setSort('conv')" title="每單位權證可換多少標的股數。行使比例×理論Δ＝有效Δ；但本表 Δ 欄已是有效Δ，勿再相乘">行使比例<span class="sarrow"></span></th>
+        <th data-c="ovr"  onclick="setSort('ovr')"  title="流通在外量佔發行量比例(%)；越高代表籌碼多在外、發行商回收空間小">流通在外%<span class="sarrow"></span></th>
+        <th data-c="sl"   onclick="setSort('sl')"   title="買賣價差比÷實質槓桿，越小越划算（預設排序）">差槓比<span class="sarrow"></span></th>
+        <th data-c="io"   onclick="setSort('io')">價內外<span class="sarrow"></span></th>
+        <th data-c="net"  onclick="setSort('net')"  title="標的每動1個tick權證漲多少(|delta|×tick) 對照 當天theta損耗；✓包過=前者≥後者。滑鼠移上看完整算式">1tick vs theta<span class="sarrow"></span></th>
+        <th data-c="per"  onclick="setSort('per')">剩餘<span class="sarrow"></span></th>
+        <th data-c="iv"   onclick="setSort('iv')"   title="發行商掛的買進/賣出隱波；箭頭為相對上次觀測變動。排序依買進隱波。滑鼠移上看歷史，抓偷調隱波">隱波 買/賣<span class="sarrow"></span></th>
       </tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody id="wtbody"></tbody>
     </table>
-    <div class="foot">差槓比 = 買賣價差比 ÷ 實質槓桿（越小＝用越低的價差成本換到越高槓桿）；本表<b>依差槓比由小到大排</b>、不設槓桿硬門檻。
+    <div class="foot">點欄位標題可自訂排序（再點一次反向）；預設<b>依差槓比由小到大</b>。差槓比 = 買賣價差比 ÷ 實質槓桿（越小＝用越低的價差成本換到越高槓桿）。
     「1tick vs theta」= 標的每動 1 個 tick 權證漲多少（|delta|×tick，delta 已含行使比例）對照 當天 theta 損耗（|theta|）：
     <span class="tk ok">✓ 剩</span> 代表標的往有利方向動一檔就<b>包得過</b>當天時間價值損耗、<span class="tk bad">✗ 缺</span> 代表還差多少（認購看漲、認售看跌）。滑鼠移上看完整算式與檔數換算。
     隱波「買/賣」= 發行商掛的買進/賣出隱含波動率；▲▼ 為買進隱波相對上次觀測的變動，滑鼠移上顯示歷次變動紀錄（抓發行商偷調隱波）。每天跑會累積軌跡。</div>`;
+  renderRows();
   document.title = `${code} ${uname}｜可買權證（${picks.length}）`;
 }
 
