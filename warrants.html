@@ -36,6 +36,9 @@
   .type{padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700;}
   .type.call{background:rgba(229,57,53,.16);color:var(--call);}
   .type.put{background:rgba(38,166,154,.16);color:var(--put);}
+  .ivwatch{cursor:help;border-bottom:1px dotted var(--border);}
+  .ivwatch .sl2{color:var(--muted);margin:0 2px;}
+  .up{color:var(--call);font-weight:700;} .dn{color:var(--put);font-weight:700;}
   .empty{padding:40px;text-align:center;color:var(--muted);font-size:15px;}
   .cards{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
@@ -58,6 +61,23 @@ function num(s,suf){ s=String(s==null?'':s).trim(); if(s==='') return '—';
   const n=Number(s); return (isFinite(n)?(Math.round(n*100)/100):s)+(suf||''); }
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function iv1(x){ x=String(x==null?'':x).trim(); if(x===''||x==='0'||x==='0.00') return '—'; const n=Number(x); return isFinite(n)?n.toFixed(1):x; }
+
+// 買/賣隱波 + 相對上一次觀測的變動（抓發行商偷調隱波），tooltip 顯示歷史
+function ivCell(w){
+  const cur = `${iv1(w.ivb)}<span class="sl2">/</span>${iv1(w.ivs)}`;
+  const h = Array.isArray(w.ivh)? w.ivh : [];
+  let arrow='';
+  if(h.length>=2){
+    const a=h[h.length-1][1], b=h[h.length-2][1];   // 買IV 最近兩個變動點
+    if(a!=null && b!=null){ const d=Math.round((a-b)*100)/100;
+      if(d>0) arrow=` <span class="up">▲${d}</span>`; else if(d<0) arrow=` <span class="dn">▼${Math.abs(d)}</span>`; }
+  }
+  const title = h.length
+    ? '買/賣隱波變動紀錄（僅記錄有變動時）：\n' + h.map(o=>`${o[0]}　買 ${o[1]==null?'—':o[1]} / 賣 ${o[2]==null?'—':o[2]}`).join('\n')
+    : '尚無歷史（多跑幾天累積後可看調整軌跡）';
+  return `<span class="ivwatch" title="${esc(title)}">${cur}${arrow}</span>`;
+}
 
 function renderStock(data, code){
   const picks = (data.picks||{})[code] || [];
@@ -98,7 +118,7 @@ function renderStock(data, code){
       <td class="r">${esc(w.io)||'—'}</td>
       <td class="r">${tdCell(w)}</td>
       <td class="r">${num(w.per,' 天')}</td>
-      <td class="r">${num(w.iv,'%')}</td>
+      <td class="r">${ivCell(w)}</td>
     </tr>`;
   }).join('');
   document.getElementById('app').innerHTML = head + `
@@ -107,12 +127,13 @@ function renderStock(data, code){
         <th>權證</th><th>類型</th><th>發行商</th><th>成交價</th><th>成交量</th>
         <th>買賣價差比</th><th>槓桿</th><th title="買賣價差比÷實質槓桿，越小越划算">差槓比 ▾</th>
         <th>價內外</th><th title="每天時間價值損耗換算成標的股價：|theta|÷delta">每日時間損耗</th>
-        <th>剩餘</th><th>隱波</th>
+        <th>剩餘</th><th title="發行商掛的買進/賣出隱波；箭頭為相對上次觀測變動。滑鼠移上看歷史，抓偷調隱波">隱波 買/賣</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="foot">差槓比 = 買賣價差比 ÷ 實質槓桿（越小＝用越低的價差成本換到越高槓桿）。
-    每日時間損耗 = |theta| ÷ delta，即持有此權證每天的時間價值損耗，換算成「標的股價下跌多少元」，也是標的每天需上漲以打平的幅度。</div>`;
+    每日時間損耗 = |theta| ÷ delta，即持有此權證每天的時間價值損耗，換算成「標的股價下跌多少元」。
+    隱波「買/賣」= 發行商掛的買進/賣出隱含波動率；▲▼ 為買進隱波相對上次觀測的變動，滑鼠移上顯示歷次變動紀錄（用來抓發行商偷偷調降隱波坑賣回）。每天跑會累積軌跡。</div>`;
   document.title = `${code} ${uname}｜可買權證（${picks.length}）`;
 }
 
