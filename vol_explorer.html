@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>法說會事件波動率探索</title>
+<style>
+  :root{
+    --bg:#131722; --bg2:#0e1117; --surface:#1e222d; --surface2:#242833;
+    --border:#2a2e39; --text:#e8eaed; --text-strong:#ffffff; --muted:#9aa1ad;
+    --accent:#2962ff; --accent-h:#1e53e5; --accent-light:#5b9cff;
+    --accent-soft:rgba(41,98,255,.16);
+    --rise:#f7525f; --fall:#26a69a;
+    --font:'Trebuchet MS','Noto Sans TC',-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang TC','Microsoft JhengHei',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;}
+  a{color:var(--accent-light);text-decoration:none;} a:hover{text-decoration:underline;}
+  .wrap{max-width:1000px;margin:0 auto;padding:26px 20px 70px;}
+  .backlink{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;font-weight:600;margin-bottom:18px;}
+  .backlink:hover{color:var(--text);text-decoration:none;}
+
+  h1{font-size:22px;font-weight:800;color:var(--text-strong);margin:0 0 4px;display:flex;align-items:center;gap:10px;}
+  h1 .ic{width:22px;height:22px;color:var(--accent-light);}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px;}
+
+  /* 控制列 */
+  .controls{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:22px;
+            display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end;}
+  .ctl{display:flex;flex-direction:column;gap:6px;}
+  .ctl label{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.02em;}
+  .ctl input,.ctl select{background:var(--bg2);color:var(--text-strong);border:1px solid var(--border);border-radius:8px;
+       padding:9px 12px;font-size:15px;font-family:var(--font);font-weight:600;outline:none;transition:border-color .12s;}
+  .ctl input:focus,.ctl select:focus{border-color:var(--accent);}
+  #codeInput{width:190px;}
+  .ctl select{width:104px;cursor:pointer;}
+  .yr-sep{align-self:center;color:var(--muted);font-weight:700;padding:0 2px 8px;}
+  .quick{display:flex;gap:6px;flex-wrap:wrap;}
+  .quick button{background:var(--bg2);color:var(--muted);border:1px solid var(--border);border-radius:7px;
+       padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .12s;}
+  .quick button:hover{color:var(--text);border-color:var(--accent);}
+  .quick button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+
+  /* 標的抬頭 */
+  #head{display:none;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px;}
+  #head .code{color:var(--accent-light);font-size:26px;font-weight:800;}
+  #head .name{font-size:20px;font-weight:700;color:var(--text-strong);}
+  #head .badge{background:var(--accent-soft);color:var(--accent-light);border:1px solid rgba(41,98,255,.3);
+       padding:3px 11px;border-radius:6px;font-size:13px;font-weight:700;}
+  #rangeNote{color:var(--muted);font-size:13px;margin-bottom:16px;display:none;}
+  #rangeNote b{color:var(--text);font-weight:700;}
+
+  /* 重點數字卡 */
+  #cards{display:none;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:11px 18px;min-width:92px;text-align:center;}
+  .card .l{font-size:12px;color:var(--muted);font-weight:600;margin-bottom:5px;}
+  .card .v{font-size:22px;font-weight:800;color:var(--text-strong);line-height:1;}
+  .card .v small{font-size:12px;font-weight:600;color:var(--muted);}
+  .card.hi{background:var(--accent);border-color:var(--accent);}
+  .card.hi .l{color:#cdd9ff;} .card.hi .v{color:#fff;} .card.hi .v small{color:#cdd9ff;}
+
+  /* 圖表 */
+  #chartWrap{display:none;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px 12px;margin:14px 0 22px;}
+  #chart{width:100%;height:300px;display:block;}
+  #chart text{font-family:var(--font);}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted);}
+  .legend .k{display:inline-flex;align-items:center;gap:6px;}
+  .legend .sw{width:16px;height:3px;border-radius:2px;display:inline-block;}
+
+  /* 資料表 */
+  #tableWrap{display:none;}
+  #tableWrap h3{font-size:14px;font-weight:700;color:var(--text);margin:0 0 10px;display:flex;align-items:center;gap:8px;}
+  .tscroll{overflow-x:auto;border:1px solid var(--border);border-radius:10px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap;}
+  th{position:sticky;top:0;background:var(--surface2);color:var(--muted);font-weight:700;text-align:right;padding:9px 11px;border-bottom:1px solid var(--border);}
+  th:first-child{text-align:left;}
+  td{padding:8px 11px;text-align:right;border-bottom:1px solid var(--border);color:var(--text);}
+  td:first-child{text-align:left;color:var(--muted);font-weight:600;}
+  tr:hover td{background:var(--surface2);}
+  td.t0col,th.t0col{background:var(--accent-soft);color:var(--accent-light);font-weight:700;}
+  tr.avg td{background:var(--surface2);font-weight:800;color:var(--text-strong);border-top:2px solid var(--accent);border-bottom:none;}
+  tr.avg td:first-child{color:var(--accent-light);}
+
+  .empty{color:var(--muted);text-align:center;padding:60px 20px;font-size:15px;line-height:1.9;}
+  .foot{color:var(--muted);font-size:12px;margin-top:34px;line-height:1.8;border-top:1px solid var(--border);padding-top:16px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="backlink" href="index.html">← 回法說會查詢網站</a>
+
+  <h1>
+    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+    法說會事件波動率探索
+  </h1>
+  <div class="sub">輸入股票代號，看它歷次法說會前後（t−5 ~ 法說當日 ~ t+5）的平均日內波動率走勢；可自選年份區間重算平均。Parkinson 高低價估計。</div>
+
+  <div class="controls">
+    <div class="ctl">
+      <label>股票代號</label>
+      <input id="codeInput" list="codeList" placeholder="例：2330 台積電" autocomplete="off">
+      <datalist id="codeList"></datalist>
+    </div>
+    <div class="ctl">
+      <label>起始年</label>
+      <select id="yrFrom"></select>
+    </div>
+    <div class="yr-sep">~</div>
+    <div class="ctl">
+      <label>結束年</label>
+      <select id="yrTo"></select>
+    </div>
+    <div class="ctl">
+      <label>快速區間</label>
+      <div class="quick" id="quick">
+        <button data-q="all">全部</button>
+        <button data-q="5">近5年</button>
+        <button data-q="3">近3年</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="head">
+    <span class="code" id="hCode"></span>
+    <span class="name" id="hName"></span>
+    <span class="badge" id="hBadge"></span>
+  </div>
+  <div id="rangeNote"></div>
+
+  <div id="cards"></div>
+
+  <div id="chartWrap">
+    <svg id="chart"></svg>
+    <div class="legend">
+      <span class="k"><span class="sw" style="background:var(--accent-light)"></span>選定區間平均</span>
+      <span class="k"><span class="sw" style="background:var(--muted);opacity:.6"></span>全部年份平均（參考）</span>
+      <span class="k"><span class="sw" style="background:var(--accent);height:9px;width:9px;border-radius:50%"></span>法說當日</span>
+    </div>
+  </div>
+
+  <div id="tableWrap">
+    <h3><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg> 逐場明細與平均</h3>
+    <div class="tscroll"><table id="tbl"></table></div>
+  </div>
+
+  <div class="empty" id="empty">請在上方輸入股票代號開始。</div>
+
+  <div class="foot">
+    資料由 compute_vol_stats.py 產生 vol_events.json（逐場 Parkinson 波動率），本頁執行時讀取並依所選年份即時重算。<br>
+    納入規則：t−5 ~ t+5 共 11 個交易日行情齊全的法說會場次才計入；行情涵蓋 2015 年起。與法說會查詢網站分開維護。
+  </div>
+</div>
+
+<script>
+const OFFS_LABEL = o => o === 0 ? '法說當日' : (o > 0 ? '隔' + o + '日' : '前' + (-o) + '日');
+const OFFS_SHORT = o => o === 0 ? '當日' : (o > 0 ? '+' + o : String(o));
+const qs = new URLSearchParams(location.search);
+
+let DATA = null, OFFS = [], I0 = 0;   // I0 = offset 0 在 ev row 值陣列中的索引(不含首欄 ymd)
+let curCode = null;
+
+function yearOf(ymd){ return Math.floor(ymd / 10000); }
+function fmtDate(ymd){ const s = String(ymd); return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8); }
+
+// 依年份區間平均：回 {n, avg:[...11], events:[...]}
+function averageRange(events, y0, y1){
+  const sel = events.filter(r => { const y = yearOf(r[0]); return y >= y0 && y <= y1; });
+  if(!sel.length) return {n:0, avg:null, events:[]};
+  const sums = new Array(OFFS.length).fill(0);
+  sel.forEach(r => { for(let i=0;i<OFFS.length;i++) sums[i] += r[i+1]; });
+  return {n:sel.length, avg:sums.map(s => s / sel.length), events:sel};
+}
+
+// ── 折線圖（選定區間為主線＋全部年份參考線）──
+function drawChart(sel, ref){
+  const W = 920, H = 300, padL = 46, padR = 16, padT = 22, padB = 34;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = OFFS.length;
+  const xs = i => padL + innerW * (i / (n - 1));
+  // y 範圍：涵蓋兩條線
+  let lo = Infinity, hi = -Infinity;
+  [sel, ref].forEach(a => { if(a) a.forEach(v => { lo = Math.min(lo, v); hi = Math.max(hi, v); }); });
+  if(!isFinite(lo)){ lo = 0; hi = 1; }
+  const pad = (hi - lo) * 0.15 || 0.1; lo = Math.max(0, lo - pad); hi = hi + pad;
+  const span = (hi - lo) || 1;
+  const ys = v => padT + innerH * (1 - (v - lo) / span);
+
+  // y 網格（4 條）
+  let grid = '', yl = '';
+  const TICKS = 4;
+  for(let t=0;t<=TICKS;t++){
+    const val = lo + span * t / TICKS, y = ys(val).toFixed(1);
+    grid += `<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
+    yl += `<text x="${padL-8}" y="${(+y+3.5).toFixed(1)}" font-size="10.5" text-anchor="end" fill="var(--muted)">${val.toFixed(2)}</text>`;
+  }
+  // 法說當日虛線
+  const zx = xs(I0).toFixed(1);
+  grid += `<line x1="${zx}" y1="${padT}" x2="${zx}" y2="${H-padB}" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4,3" opacity=".6"/>`;
+
+  // x 標籤
+  let xl = '';
+  OFFS.forEach((o,i) => {
+    xl += `<text x="${xs(i).toFixed(1)}" y="${H-12}" font-size="11" text-anchor="middle" fill="${o===0?'var(--accent-light)':'var(--muted)'}" font-weight="${o===0?700:500}">${OFFS_SHORT(o)}</text>`;
+  });
+
+  const pathOf = a => a.map((v,i) => `${i===0?'M':'L'}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' ');
+
+  let refLine = '';
+  if(ref){
+    refLine = `<path d="${pathOf(ref)}" fill="none" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="5,4" opacity=".55"/>`;
+  }
+  let mainLine = `<path d="${pathOf(sel)}" fill="none" stroke="var(--accent-light)" stroke-width="2.6"/>`;
+  let dots = sel.map((v,i) => {
+    const zero = OFFS[i] === 0;
+    return `<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="${zero?5.5:3.4}" fill="${zero?'var(--accent)':'var(--accent-light)'}" stroke="var(--bg)" stroke-width="1.5"><title>${OFFS_LABEL(OFFS[i])}：${v.toFixed(2)}%</title></circle>`;
+  }).join('');
+  // 每個點的數值標籤（主線）
+  let vlab = sel.map((v,i) => `<text x="${xs(i).toFixed(1)}" y="${(ys(v)-11).toFixed(1)}" font-size="10.5" text-anchor="middle" fill="${OFFS[i]===0?'var(--accent-light)':'var(--muted)'}" font-weight="${OFFS[i]===0?700:500}">${v.toFixed(2)}</text>`).join('');
+
+  document.getElementById('chart').setAttribute('viewBox', `0 0 ${W} ${H}`);
+  document.getElementById('chart').innerHTML = grid + yl + xl + refLine + mainLine + dots + vlab +
+    `<text x="${padL-8}" y="${padT-8}" font-size="10.5" text-anchor="end" fill="var(--muted)">%</text>`;
+}
+
+function keyCards(avg){
+  const cell = (lbl, o, hi) => {
+    const i = OFFS.indexOf(o);
+    const v = i >= 0 ? avg[i] : null;
+    return `<div class="card${hi?' hi':''}"><div class="l">${lbl}</div><div class="v">${v==null?'<small>—</small>':v.toFixed(2)+'<small>%</small>'}</div></div>`;
+  };
+  return cell('前2日',-2) + cell('前1日',-1) + cell('法說當日',0,true) + cell('隔1日',1);
+}
+
+function dataTable(res){
+  let th = '<tr><th>法說日</th>';
+  OFFS.forEach(o => th += `<th class="${o===0?'t0col':''}">${OFFS_SHORT(o)}</th>`);
+  th += '</tr>';
+  // 平均列（置頂）
+  let avgTr = '<tr class="avg"><td>平均（' + res.n + ' 場）</td>';
+  res.avg.forEach((v,i) => avgTr += `<td class="${OFFS[i]===0?'t0col':''}">${v.toFixed(2)}</td>`);
+  avgTr += '</tr>';
+  // 逐場（新→舊）
+  let rows = '';
+  res.events.forEach(r => {
+    rows += '<tr><td>' + fmtDate(r[0]) + '</td>';
+    for(let i=0;i<OFFS.length;i++) rows += `<td class="${OFFS[i]===0?'t0col':''}">${r[i+1].toFixed(2)}</td>`;
+    rows += '</tr>';
+  });
+  document.getElementById('tbl').innerHTML = th + avgTr + rows;
+}
+
+// 依目前選擇渲染
+function render(){
+  const st = DATA.stocks[curCode];
+  if(!st) return;
+  const y0 = +document.getElementById('yrFrom').value;
+  const y1 = +document.getElementById('yrTo').value;
+  const lo = Math.min(y0,y1), hi = Math.max(y0,y1);
+  const res = averageRange(st.ev, lo, hi);
+  const full = averageRange(st.ev, 0, 9999);
+
+  document.getElementById('head').style.display = 'flex';
+  document.getElementById('hCode').textContent = curCode;
+  document.getElementById('hName').textContent = st.name || '';
+  document.getElementById('hBadge').textContent = '共 ' + full.n + ' 場（' + yearOf(st.ev[st.ev.length-1][0]) + '–' + yearOf(st.ev[0][0]) + '）';
+
+  const rn = document.getElementById('rangeNote');
+  rn.style.display = 'block';
+  if(res.n === 0){
+    rn.innerHTML = `<b>${lo}–${hi}</b> 年間查無符合窗口的法說會場次。`;
+    document.getElementById('cards').style.display = 'none';
+    document.getElementById('chartWrap').style.display = 'none';
+    document.getElementById('tableWrap').style.display = 'none';
+    return;
+  }
+  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}。`;
+
+  document.getElementById('cards').style.display = 'flex';
+  document.getElementById('cards').innerHTML = keyCards(res.avg);
+  document.getElementById('chartWrap').style.display = 'block';
+  drawChart(res.avg, res.n < full.n ? full.avg : null);
+  document.getElementById('tableWrap').style.display = 'block';
+  dataTable(res);
+  document.getElementById('empty').style.display = 'none';
+}
+
+// 年份下拉：以該股實際有事件的年份填入
+function fillYears(st){
+  const yrs = [...new Set(st.ev.map(r => yearOf(r[0])))].sort((a,b)=>a-b);
+  const from = document.getElementById('yrFrom'), to = document.getElementById('yrTo');
+  from.innerHTML = yrs.map(y => `<option value="${y}">${y}</option>`).join('');
+  to.innerHTML   = yrs.map(y => `<option value="${y}">${y}</option>`).join('');
+  from.value = yrs[0];
+  to.value = yrs[yrs.length-1];
+}
+
+function selectCode(code){
+  code = String(code||'').trim();
+  const st = DATA.stocks[code];
+  if(!st){
+    document.getElementById('empty').style.display = 'block';
+    document.getElementById('empty').textContent = code ? `查無代號「${code}」的法說會波動率資料。` : '請在上方輸入股票代號開始。';
+    ['head','rangeNote','cards','chartWrap','tableWrap'].forEach(id=>document.getElementById(id).style.display='none');
+    return;
+  }
+  curCode = code;
+  fillYears(st);
+  applyYearParams(st);   // 若網址帶 from/to 年份，套用（深連結用）
+  setQuickActive(null);
+  render();
+  const url = new URL(location); url.searchParams.set('code', code); history.replaceState(null,'',url);
+}
+
+// 網址 ?from=2015&to=2020：只在首次載入套到年份下拉（深連結用）；之後換股即重置為全區間
+let pendingYears = {from: parseInt(qs.get('from'),10), to: parseInt(qs.get('to'),10)};
+function applyYearParams(st){
+  const yrs = [...new Set(st.ev.map(r => yearOf(r[0])))].sort((a,b)=>a-b);
+  const minY = yrs[0], maxY = yrs[yrs.length-1];
+  const clamp = v => Math.max(minY, Math.min(maxY, v));
+  if(!isNaN(pendingYears.from)) document.getElementById('yrFrom').value = clamp(pendingYears.from);
+  if(!isNaN(pendingYears.to))   document.getElementById('yrTo').value = clamp(pendingYears.to);
+  pendingYears = {from:NaN, to:NaN};
+}
+
+function setQuickActive(q){
+  document.querySelectorAll('#quick button').forEach(b => b.classList.toggle('on', b.dataset.q === q));
+}
+
+// 快速區間
+document.getElementById('quick').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b || !curCode) return;
+  const st = DATA.stocks[curCode];
+  const yrs = [...new Set(st.ev.map(r => yearOf(r[0])))].sort((a,b)=>a-b);
+  const maxY = yrs[yrs.length-1], minY = yrs[0];
+  const from = document.getElementById('yrFrom'), to = document.getElementById('yrTo');
+  if(b.dataset.q === 'all'){ from.value = minY; to.value = maxY; }
+  else { const span = +b.dataset.q; from.value = Math.max(minY, maxY - span + 1); to.value = maxY; }
+  setQuickActive(b.dataset.q);
+  render();
+});
+
+['yrFrom','yrTo'].forEach(id => document.getElementById(id).addEventListener('change', () => { setQuickActive(null); render(); }));
+
+const ci = document.getElementById('codeInput');
+ci.addEventListener('change', () => { const c = ci.value.trim().split(/\s+/)[0]; selectCode(c); });
+ci.addEventListener('keydown', e => { if(e.key === 'Enter'){ const c = ci.value.trim().split(/\s+/)[0]; selectCode(c); } });
+
+fetch('vol_events.json', {cache:'no-store'})
+  .then(r => { if(!r.ok) throw new Error('vol_events.json 讀取失敗'); return r.json(); })
+  .then(d => {
+    DATA = d; OFFS = d.offsets; I0 = OFFS.indexOf(0);
+    // datalist：代號 + 名稱
+    const opts = Object.entries(d.stocks).sort((a,b)=>a[0].localeCompare(b[0]))
+      .map(([c,v]) => `<option value="${c}">${c} ${v.name}</option>`).join('');
+    document.getElementById('codeList').innerHTML = opts;
+    const initial = qs.get('code');
+    if(initial){ ci.value = initial; selectCode(initial); }
+  })
+  .catch(err => {
+    document.getElementById('empty').innerHTML =
+      `無法載入 vol_events.json（${err.message}）。<br>請確認已跑過 compute_vol_stats.py，且此頁是透過 http / GitHub Pages 開啟（非本機 file://）。`;
+  });
+</script>
+</body>
+</html>
