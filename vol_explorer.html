@@ -155,7 +155,7 @@
       <span class="kicker"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-5 3 3 5-7"/></svg> 法說會事件波動率</span>
       <div class="welcome">歡迎來到</div>
       <h1>【<span class="grad">法說會事件波動率探索</span>】</h1>
-      <p class="lead">輸入任一檔股票，看它法說會前後（t−5 ~ t+5）每個相對日的「滾動 30 天年化波動率」，或切換到當日單日波動率；皆可自選年份區間重算。</p>
+      <p class="lead">輸入任一檔股票，看它法說會前後（t−5 ~ t+5）每個相對日的「近 30 天（含當日）年化波動率」，或切換到當日單日波動率；皆可自選年份區間重算。</p>
       <div class="hsearch">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         <input id="heroInput" list="codeList" placeholder="輸入股票代號或名稱，例：2330 台積電" autocomplete="off">
@@ -190,7 +190,7 @@
     <div class="sub" id="subDesc"></div>
 
     <div class="modetabs" id="modetabs">
-      <button class="mtab on" data-mode="roll">t−5 ~ t+5 滾動 30 天年化波動率</button>
+      <button class="mtab on" data-mode="roll">t−5 ~ t+5 近 30 天年化波動率</button>
       <button class="mtab" data-mode="rel">t−5 ~ t+5 單日波動率</button>
     </div>
 
@@ -430,19 +430,19 @@ function renderRoll(st){
   document.getElementById('hBadge').textContent = '共 ' + full.n + ' 場（' + yearOf(evs[evs.length-1][0]) + '–' + yearOf(evs[0][0]) + '）';
   const rn = document.getElementById('rangeNote'); rn.style.display = 'block';
   if(res.n === 0){ showEmptyNote(`<b>${lo}–${hi}</b> 年間查無符合窗口的法說會場次。`); return; }
-  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會，每個相對日為「往前 ${PREWIN} 天滾動年化波動率」的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}。`;
+  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會，每個相對日為「近 ${PREWIN} 天（含當日）滾動年化波動率」的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}。`;
 
   document.getElementById('cards').style.display = 'flex';
   document.getElementById('cards').innerHTML = keyCards(res.avg);
   document.getElementById('chartWrap').style.display = 'block';
-  document.getElementById('chartCap').innerHTML = `法說會前後每個相對日「往前 ${PREWIN} 天滾動<b>年化</b>波動率」（%）跨場平均；t0 為法說當日（虛線）。因窗口 ${PREWIN} 天、t−5~t+5 僅差 10 天，曲線通常平緩，重點看斜率（事件逼近時波動率累積或消退）。`;
+  document.getElementById('chartCap').innerHTML = `法說會前後每個相對日「近 ${PREWIN} 天（含當日）滾動<b>年化</b>波動率」（%）跨場平均；t0 為法說當日（虛線）。因窗口 ${PREWIN} 天、t−5~t+5 僅差 10 天，曲線通常平緩，重點看斜率（事件逼近時波動率累積或消退）。`;
   drawChart(res.avg, res.n < full.n ? full.avg : null);
   document.getElementById('legend').innerHTML =
     `<span class="k"><span class="sw" style="background:var(--accent-light)"></span>選定區間平均</span>` +
     `<span class="k"><span class="sw" style="background:var(--muted);opacity:.6"></span>全部年份平均（參考）</span>` +
     `<span class="k"><span class="sw dot" style="background:var(--accent)"></span>法說當日</span>`;
   document.getElementById('tableWrap').style.display = 'block';
-  document.querySelector('#tableTitle span').textContent = `逐場明細（往前 ${PREWIN} 天滾動年化波動率）`;
+  document.querySelector('#tableTitle span').textContent = `逐場明細（近 ${PREWIN} 天（含當日）滾動年化波動率）`;
   dataTable(res, 1);
 }
 
@@ -483,7 +483,7 @@ function updateModeUI(){
   document.getElementById('annToggle').style.display = (mode === 'rel') ? 'flex' : 'none';
   document.querySelectorAll('#annToggle .seg').forEach(b => b.classList.toggle('on', (+b.dataset.ann === 1) === ann));
   document.getElementById('subDesc').innerHTML = (mode === 'roll')
-    ? `法說會前後（t−5 ~ 當日 ~ t+5）每個相對日的「往前 ${PREWIN} 天滾動年化波動率」跨場平均，看事件逼近時的波動水位走勢。Parkinson 高低價估計 ×√252 年化。`
+    ? `法說會前後（t−5 ~ 當日 ~ t+5）每個相對日的「近 ${PREWIN} 天（含當日）滾動年化波動率」跨場平均，看事件逼近時的波動水位走勢。Parkinson 高低價估計 ×√252 年化。`
     : `法說會前後（t−5 ~ 當日 ~ t+5）每個相對日的平均「單日」波動率，看事件當天的波動尖峰；右側可切「日內／年化」單位。`;
 }
 
@@ -598,7 +598,7 @@ fetch('vol_events.json', {cache:'no-store'})
     DATA = d; OFFS = d.offsets; I0 = OFFS.indexOf(0); PREWIN = d.roll_window || 30;
     document.getElementById('footNote').innerHTML =
       `資料由 compute_vol_stats.py 產生 vol_events.json（逐場 Parkinson 波動率）。<br>`
-      + `視圖①「滾動 ${PREWIN} 天年化波動率」：t−5 ~ t+5 每個相對日各取其往前 ${PREWIN} 個交易日的 Parkinson 日內波動率平均、×√252 年化，跨場平均。<br>`
+      + `視圖①「近 ${PREWIN} 天年化波動率」：t−5 ~ t+5 每個相對日各取「含當日往回 ${PREWIN} 個交易日」的 Parkinson 日內波動率平均、×√252 年化，跨場平均。<br>`
       + `視圖②「單日波動率」：每個相對日的當日 Parkinson 波動率，可切日內／年化單位。兩視圖皆需 11 個相對日行情齊全的場次才計入；行情涵蓋 2015 年起。與法說會查詢網站分開維護。`;
     document.getElementById('codeList').innerHTML =
       Object.entries(d.stocks).sort((a,b)=>a[0].localeCompare(b[0]))
