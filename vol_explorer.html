@@ -126,7 +126,6 @@
   .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted);}
   .legend .k{display:inline-flex;align-items:center;gap:6px;}
   .legend .sw{width:16px;height:3px;border-radius:2px;display:inline-block;}
-  .legend .sw.band{height:11px;border-radius:3px;background:var(--accent);opacity:.18;}
   .legend .sw.dot{width:9px;height:9px;border-radius:50%;}
 
   #tableWrap{display:none;}
@@ -156,7 +155,7 @@
       <span class="kicker"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-5 3 3 5-7"/></svg> 法說會事件波動率</span>
       <div class="welcome">歡迎來到</div>
       <h1>【<span class="grad">法說會事件波動率探索</span>】</h1>
-      <p class="lead">輸入任一檔股票，看它歷次法說會的「事件前 30 天年化波動率」走勢，或切換到法說會前後（t−5 ~ 當日 ~ t+5）逐日波動率；皆可自選年份區間重算。</p>
+      <p class="lead">輸入任一檔股票，看它法說會前後（t−5 ~ t+5）每個相對日的「滾動 30 天年化波動率」，或切換到當日單日波動率；皆可自選年份區間重算。</p>
       <div class="hsearch">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         <input id="heroInput" list="codeList" placeholder="輸入股票代號或名稱，例：2330 台積電" autocomplete="off">
@@ -191,8 +190,8 @@
     <div class="sub" id="subDesc"></div>
 
     <div class="modetabs" id="modetabs">
-      <button class="mtab on" data-mode="p30">事件前 30 天年化波動率</button>
-      <button class="mtab" data-mode="rel">法說會前後 t−5 ~ t+5 波動率</button>
+      <button class="mtab on" data-mode="roll">t−5 ~ t+5 滾動 30 天年化波動率</button>
+      <button class="mtab" data-mode="rel">t−5 ~ t+5 單日波動率</button>
     </div>
 
     <div class="controls">
@@ -261,7 +260,7 @@ const qs = new URLSearchParams(location.search);
 
 let DATA = null, OFFS = [], I0 = 0, PREWIN = 30;
 let curCode = null;
-let mode = (qs.get('view') === 'rel') ? 'rel' : 'p30';   // 'p30'=視圖①  'rel'=視圖②
+let mode = (qs.get('view') === 'rel') ? 'rel' : 'roll';   // 'roll'=視圖①滾動年化  'rel'=視圖②單日
 let ann = false;                                          // 視圖②：是否年化顯示
 
 function yearOf(ymd){ return Math.floor(ymd / 10000); }
@@ -328,20 +327,21 @@ function showExplorer(){
 }
 
 // ══════════ 共用小工具 ══════════
+function seriesOf(st){ return (mode === 'roll') ? (st.roll || []) : (st.ev || []); }
 function unionYears(st){
   const ys = [];
   (st.ev || []).forEach(r => ys.push(yearOf(r[0])));
-  (st.p30 || []).forEach(r => ys.push(yearOf(r[0])));
+  (st.roll || []).forEach(r => ys.push(yearOf(r[0])));
   return [...new Set(ys)].sort((a,b)=>a-b);
 }
-function evCount(st){ return (st.ev && st.ev.length) || (st.p30 && st.p30.length) || 0; }
+function evCount(st){ return (st.roll && st.roll.length) || (st.ev && st.ev.length) || 0; }
 function hideBlocks(){ ['cards','chartWrap','tableWrap'].forEach(id=>document.getElementById(id).style.display='none'); }
 function showEmptyNote(msg){
   const rn = document.getElementById('rangeNote'); rn.style.display='block'; rn.innerHTML = msg;
   hideBlocks();
 }
 
-// ══════════ 視圖② 分析（t−5 ~ t+5，可年化） ══════════
+// 依年份區間取子集並算各相對日平均（視圖①、②共用；每列＝[ymd, v_-5..v_+5]）
 function averageRange(events, y0, y1){
   const sel = events.filter(r => { const y = yearOf(r[0]); return y >= y0 && y <= y1; });
   if(!sel.length) return {n:0, avg:null, events:[]};
@@ -350,7 +350,7 @@ function averageRange(events, y0, y1){
   return {n:sel.length, avg:sums.map(s => s / sel.length), events:sel};
 }
 
-function drawChartRel(sel, ref){
+function drawChart(sel, ref){
   const W = 920, H = 300, padL = 46, padR = 16, padT = 22, padB = 34;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const n = OFFS.length;
@@ -392,7 +392,7 @@ function drawChartRel(sel, ref){
     `<text x="${padL-8}" y="${padT-8}" font-size="10.5" text-anchor="end" fill="var(--muted)">%</text>`;
 }
 
-function keyCardsRel(avg){
+function keyCards(avg){
   const cell = (lbl, o, hi) => {
     const i = OFFS.indexOf(o);
     const v = i >= 0 ? avg[i] : null;
@@ -401,7 +401,7 @@ function keyCardsRel(avg){
   return cell('前2日',-2) + cell('前1日',-1) + cell('法說當日',0,true) + cell('隔1日',1);
 }
 
-function dataTableRel(res, f){
+function dataTable(res, f){
   let th = '<tr><th>法說日</th>';
   OFFS.forEach(o => th += `<th class="${o===0?'t0col':''}">${OFFS_SHORT(o)}</th>`);
   th += '</tr>';
@@ -417,9 +417,39 @@ function dataTableRel(res, f){
   document.getElementById('tbl').innerHTML = th + avgTr + rows;
 }
 
+// ══════════ 視圖① 滾動 PREWIN 天年化波動率（t−5 ~ t+5 各相對日） ══════════
+function renderRoll(st){
+  const evs = st.roll || [];
+  if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 的滾動年化資料（需事件前 ${PREWIN}+5 個交易日行情齊全）。可切換到「單日波動率」檢視。`); return; }
+  const y0 = +document.getElementById('yrFrom').value;
+  const y1 = +document.getElementById('yrTo').value;
+  const lo = Math.min(y0,y1), hi = Math.max(y0,y1);
+  const res = averageRange(evs, lo, hi);
+  const full = averageRange(evs, 0, 9999);
+
+  document.getElementById('hBadge').textContent = '共 ' + full.n + ' 場（' + yearOf(evs[evs.length-1][0]) + '–' + yearOf(evs[0][0]) + '）';
+  const rn = document.getElementById('rangeNote'); rn.style.display = 'block';
+  if(res.n === 0){ showEmptyNote(`<b>${lo}–${hi}</b> 年間查無符合窗口的法說會場次。`); return; }
+  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會，每個相對日為「往前 ${PREWIN} 天滾動年化波動率」的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}。`;
+
+  document.getElementById('cards').style.display = 'flex';
+  document.getElementById('cards').innerHTML = keyCards(res.avg);
+  document.getElementById('chartWrap').style.display = 'block';
+  document.getElementById('chartCap').innerHTML = `法說會前後每個相對日「往前 ${PREWIN} 天滾動<b>年化</b>波動率」（%）跨場平均；t0 為法說當日（虛線）。因窗口 ${PREWIN} 天、t−5~t+5 僅差 10 天，曲線通常平緩，重點看斜率（事件逼近時波動率累積或消退）。`;
+  drawChart(res.avg, res.n < full.n ? full.avg : null);
+  document.getElementById('legend').innerHTML =
+    `<span class="k"><span class="sw" style="background:var(--accent-light)"></span>選定區間平均</span>` +
+    `<span class="k"><span class="sw" style="background:var(--muted);opacity:.6"></span>全部年份平均（參考）</span>` +
+    `<span class="k"><span class="sw dot" style="background:var(--accent)"></span>法說當日</span>`;
+  document.getElementById('tableWrap').style.display = 'block';
+  document.querySelector('#tableTitle span').textContent = `逐場明細（往前 ${PREWIN} 天滾動年化波動率）`;
+  dataTable(res, 1);
+}
+
+// ══════════ 視圖② 單日波動率（t−5 ~ t+5，可年化） ══════════
 function renderRel(st){
   const evs = st.ev || [];
-  if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 完整窗口的法說會場次。可切換到「事件前 30 天年化波動率」檢視。`); return; }
+  if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 完整窗口的法說會場次。可切換到「滾動年化波動率」檢視。`); return; }
   const y0 = +document.getElementById('yrFrom').value;
   const y1 = +document.getElementById('yrTo').value;
   const lo = Math.min(y0,y1), hi = Math.max(y0,y1);
@@ -428,139 +458,23 @@ function renderRel(st){
   const f = ann ? SQRT252 : 1;
 
   document.getElementById('hBadge').textContent = '共 ' + full.n + ' 場（' + yearOf(evs[evs.length-1][0]) + '–' + yearOf(evs[0][0]) + '）';
-
   const rn = document.getElementById('rangeNote'); rn.style.display = 'block';
   if(res.n === 0){ showEmptyNote(`<b>${lo}–${hi}</b> 年間查無符合窗口的法說會場次。`); return; }
   const unit = ann ? '年化波動率' : '日內波動率';
   rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}；單位：<b>${unit}</b>。`;
 
   document.getElementById('cards').style.display = 'flex';
-  document.getElementById('cards').innerHTML = keyCardsRel(res.avg.map(v=>v*f));
+  document.getElementById('cards').innerHTML = keyCards(res.avg.map(v=>v*f));
   document.getElementById('chartWrap').style.display = 'block';
-  document.getElementById('chartCap').innerHTML = `法說會前後每個相對日的平均<b>${unit}</b>（%）；t0 為法說當日（虛線）。`;
-  drawChartRel(res.avg.map(v=>v*f), res.n < full.n ? full.avg.map(v=>v*f) : null);
+  document.getElementById('chartCap').innerHTML = `法說會前後每個相對日的平均<b>${unit}</b>（%）；t0 為法說當日（虛線）。單日波動率反映當天的波動尖峰。`;
+  drawChart(res.avg.map(v=>v*f), res.n < full.n ? full.avg.map(v=>v*f) : null);
   document.getElementById('legend').innerHTML =
     `<span class="k"><span class="sw" style="background:var(--accent-light)"></span>選定區間平均</span>` +
     `<span class="k"><span class="sw" style="background:var(--muted);opacity:.6"></span>全部年份平均（參考）</span>` +
     `<span class="k"><span class="sw dot" style="background:var(--accent)"></span>法說當日</span>`;
   document.getElementById('tableWrap').style.display = 'block';
   document.querySelector('#tableTitle span').textContent = '逐場明細與平均（' + unit + '）';
-  dataTableRel(res, f);
-}
-
-// ══════════ 視圖① 分析（事件前 30 天年化波動率，逐場時間序列） ══════════
-function stdev(a){
-  if(a.length < 2) return 0;
-  const m = a.reduce((s,v)=>s+v,0)/a.length;
-  return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/(a.length-1));
-}
-
-function drawChartP30(sel, avg, sd){
-  // sel：依日期由舊到新的 [[ymd, 年化波動率], ...]
-  const W = 920, H = 300, padL = 46, padR = 16, padT = 22, padB = 34;
-  const innerW = W - padL - padR, innerH = H - padT - padB;
-  const ts = sel.map(r => { const s = String(r[0]); return Date.UTC(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8)); });
-  const tmin = ts[0], tmax = ts[ts.length-1], tspan = (tmax - tmin) || 1;
-  const xs = t => padL + innerW * ((t - tmin) / tspan);
-  const vals = sel.map(r => r[1]);
-  let lo = Math.min(...vals, avg - sd), hi = Math.max(...vals, avg + sd);
-  const pad = (hi - lo) * 0.15 || 0.1; lo = Math.max(0, lo - pad); hi = hi + pad;
-  const span = (hi - lo) || 1;
-  const ys = v => padT + innerH * (1 - (v - lo) / span);
-
-  let grid = '', yl = '';
-  const TICKS = 4;
-  for(let t=0;t<=TICKS;t++){
-    const val = lo + span * t / TICKS, y = ys(val).toFixed(1);
-    grid += `<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
-    yl += `<text x="${padL-8}" y="${(+y+3.5).toFixed(1)}" font-size="10.5" text-anchor="end" fill="var(--muted)">${val.toFixed(0)}</text>`;
-  }
-
-  // ±1 標準差帶 + 平均線
-  const yTop = ys(avg + sd).toFixed(1), yBot = ys(avg - sd).toFixed(1);
-  let band = `<rect x="${padL}" y="${yTop}" width="${innerW}" height="${(yBot - yTop).toFixed(1)}" fill="var(--accent)" opacity=".12"/>`;
-  const ya = ys(avg).toFixed(1);
-  band += `<line x1="${padL}" y1="${ya}" x2="${W-padR}" y2="${ya}" stroke="var(--accent-light)" stroke-width="1.4" stroke-dasharray="6,4" opacity=".9"/>`;
-  band += `<text x="${W-padR}" y="${(+ya-5).toFixed(1)}" font-size="10.5" text-anchor="end" fill="var(--accent-light)" font-weight="700">平均 ${avg.toFixed(1)}%</text>`;
-
-  // x 軸：年份刻度（每個出現的年份標一次，落在該年 1/1 的位置，clamp 到繪圖區）
-  const years = [...new Set(sel.map(r => yearOf(r[0])))].sort((a,b)=>a-b);
-  let xl = '';
-  years.forEach(y => {
-    let x = xs(Date.UTC(y,0,1));
-    x = Math.max(padL, Math.min(W - padR, x));
-    xl += `<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${H-padB}" stroke="var(--border)" stroke-width="1" opacity=".5"/>`;
-    xl += `<text x="${x.toFixed(1)}" y="${H-12}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${y}</text>`;
-  });
-
-  const pathOf = a => a.map((r,i) => `${i===0?'M':'L'}${xs(ts[i]).toFixed(1)},${ys(r[1]).toFixed(1)}`).join(' ');
-  let line = `<path d="${pathOf(sel)}" fill="none" stroke="var(--accent-light)" stroke-width="2" opacity=".85"/>`;
-  const rDot = sel.length > 60 ? 2.3 : 3.2;
-  let dots = sel.map((r,i) =>
-    `<circle cx="${xs(ts[i]).toFixed(1)}" cy="${ys(r[1]).toFixed(1)}" r="${rDot}" fill="var(--accent-light)" stroke="var(--bg)" stroke-width="1"><title>${fmtDate(r[0])}：前${PREWIN}天年化 ${r[1].toFixed(2)}%</title></circle>`
-  ).join('');
-  // 最新一場標記為深色大點
-  const lastI = sel.length - 1;
-  dots += `<circle cx="${xs(ts[lastI]).toFixed(1)}" cy="${ys(sel[lastI][1]).toFixed(1)}" r="5" fill="var(--accent)" stroke="var(--bg)" stroke-width="1.6"><title>最新 ${fmtDate(sel[lastI][0])}：${sel[lastI][1].toFixed(2)}%</title></circle>`;
-
-  const chart = document.getElementById('chart');
-  chart.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  chart.innerHTML = grid + yl + xl + band + line + dots +
-    `<text x="${padL-8}" y="${padT-8}" font-size="10.5" text-anchor="end" fill="var(--muted)">%</text>`;
-}
-
-function keyCardsP30(vals, latest){
-  const avg = vals.reduce((s,v)=>s+v,0)/vals.length;
-  const sd = stdev(vals);
-  const mx = Math.max(...vals), mn = Math.min(...vals);
-  const card = (l,v,hi) => `<div class="card${hi?' hi':''}"><div class="l">${l}</div><div class="v">${v.toFixed(1)}<small>%</small></div></div>`;
-  return card('平均', avg) + card('標準差', sd) + card('最新一場', latest, true) + card('最高', mx) + card('最低', mn);
-}
-
-function dataTableP30(sel){
-  // sel 依日期由舊到新；表格顯示新→舊
-  const rows = sel.slice().reverse();
-  const vals = sel.map(r=>r[1]);
-  const avg = vals.reduce((s,v)=>s+v,0)/vals.length;
-  let th = `<tr><th>法說日</th><th>事件前 ${PREWIN} 天年化波動率</th></tr>`;
-  let avgTr = `<tr class="avg"><td>平均（${sel.length} 場）</td><td>${avg.toFixed(2)}</td></tr>`;
-  let body = rows.map(r => `<tr><td>${fmtDate(r[0])}</td><td>${r[1].toFixed(2)}</td></tr>`).join('');
-  document.getElementById('tbl').innerHTML = th + avgTr + body;
-}
-
-function renderP30(st){
-  const p = st.p30 || [];
-  if(!p.length){ showEmptyNote(`此檔沒有「事件前 ${PREWIN} 天」窗口的資料（可能上市未滿 ${PREWIN} 個交易日或行情不足）。可切換到「t−5 ~ t+5」檢視。`); return; }
-  const y0 = +document.getElementById('yrFrom').value;
-  const y1 = +document.getElementById('yrTo').value;
-  const lo = Math.min(y0,y1), hi = Math.max(y0,y1);
-  const sel = p.filter(r => { const y = yearOf(r[0]); return y >= lo && y <= hi; })
-              .slice().sort((a,b)=>a[0]-b[0]);   // 由舊到新
-
-  document.getElementById('hBadge').textContent = '共 ' + p.length + ' 場（' + yearOf(p[p.length-1][0]) + '–' + yearOf(p[0][0]) + '）';
-
-  const rn = document.getElementById('rangeNote'); rn.style.display = 'block';
-  if(!sel.length){ showEmptyNote(`<b>${lo}–${hi}</b> 年間查無場次。`); return; }
-
-  const vals = sel.map(r=>r[1]);
-  const avg = vals.reduce((s,v)=>s+v,0)/vals.length;
-  const sd = stdev(vals);
-  const latest = sel[sel.length-1][1];
-  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${sel.length}</b> 場法說會，事件前 ${PREWIN} 天年化波動率平均 <b>${avg.toFixed(1)}%</b>、標準差 ${sd.toFixed(1)}%。`;
-
-  document.getElementById('cards').style.display = 'flex';
-  document.getElementById('cards').innerHTML = keyCardsP30(vals, latest);
-  document.getElementById('chartWrap').style.display = 'block';
-  document.getElementById('chartCap').innerHTML = `每場法說會「事件前 ${PREWIN} 個交易日（t−1 ~ t−${PREWIN}）」的<b>年化日內波動率</b>（Parkinson 日均 ×√252），依法說日排列。`;
-  drawChartP30(sel, avg, sd);
-  document.getElementById('legend').innerHTML =
-    `<span class="k"><span class="sw" style="background:var(--accent-light)"></span>各場前 ${PREWIN} 天年化波動率</span>` +
-    `<span class="k"><span class="sw" style="background:var(--accent-light);opacity:.9"></span>區間平均（虛線）</span>` +
-    `<span class="k"><span class="sw band"></span>±1 標準差</span>` +
-    `<span class="k"><span class="sw dot" style="background:var(--accent)"></span>最新一場</span>`;
-  document.getElementById('tableWrap').style.display = 'block';
-  document.querySelector('#tableTitle span').textContent = `逐場明細（事件前 ${PREWIN} 天年化波動率）`;
-  dataTableP30(sel);
+  dataTable(res, f);
 }
 
 // ══════════ 主渲染分派 ══════════
@@ -568,9 +482,9 @@ function updateModeUI(){
   document.querySelectorAll('#modetabs .mtab').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
   document.getElementById('annToggle').style.display = (mode === 'rel') ? 'flex' : 'none';
   document.querySelectorAll('#annToggle .seg').forEach(b => b.classList.toggle('on', (+b.dataset.ann === 1) === ann));
-  document.getElementById('subDesc').innerHTML = (mode === 'p30')
-    ? `每檔股票歷次法說會的「事件前 ${PREWIN} 天年化波動率」逐場走勢；可自選年份區間，附平均與 ±1 標準差。Parkinson 高低價估計 ×√252 年化。`
-    : `法說會前後（t−5 ~ 當日 ~ t+5）每個相對日的平均波動率；可自選年份區間，並用右側切換「日內／年化」單位。`;
+  document.getElementById('subDesc').innerHTML = (mode === 'roll')
+    ? `法說會前後（t−5 ~ 當日 ~ t+5）每個相對日的「往前 ${PREWIN} 天滾動年化波動率」跨場平均，看事件逼近時的波動水位走勢。Parkinson 高低價估計 ×√252 年化。`
+    : `法說會前後（t−5 ~ 當日 ~ t+5）每個相對日的平均「單日」波動率，看事件當天的波動尖峰；右側可切「日內／年化」單位。`;
 }
 
 function render(){
@@ -581,7 +495,7 @@ function render(){
   document.getElementById('hName').textContent = st.name || '';
   document.getElementById('empty').style.display = 'none';
   updateModeUI();
-  if(mode === 'p30') renderP30(st); else renderRel(st);
+  if(mode === 'roll') renderRoll(st); else renderRel(st);
 }
 
 function fillYears(st){
@@ -636,7 +550,7 @@ document.getElementById('modetabs').addEventListener('click', e => {
   if(curCode) render(); else updateModeUI();
 });
 
-// 日內⇄年化
+// 日內⇄年化（僅視圖②）
 document.getElementById('annToggle').addEventListener('click', e => {
   const b = e.target.closest('.seg'); if(!b) return;
   ann = (+b.dataset.ann === 1);
@@ -681,11 +595,11 @@ function buildPresets(){
 fetch('vol_events.json', {cache:'no-store'})
   .then(r => { if(!r.ok) throw new Error('vol_events.json 讀取失敗'); return r.json(); })
   .then(d => {
-    DATA = d; OFFS = d.offsets; I0 = OFFS.indexOf(0); PREWIN = d.pre_window || 30;
+    DATA = d; OFFS = d.offsets; I0 = OFFS.indexOf(0); PREWIN = d.roll_window || 30;
     document.getElementById('footNote').innerHTML =
       `資料由 compute_vol_stats.py 產生 vol_events.json（逐場 Parkinson 波動率）。<br>`
-      + `視圖①「事件前 ${PREWIN} 天年化波動率」：取事件前 ${PREWIN} 個交易日（t−1 ~ t−${PREWIN}）每日 Parkinson 日內波動率平均、×√252 年化，逐場列出。<br>`
-      + `視圖②「t−5 ~ t+5」：需 11 個交易日行情齊全的場次才計入，可切換日內／年化單位。行情涵蓋 2015 年起。與法說會查詢網站分開維護。`;
+      + `視圖①「滾動 ${PREWIN} 天年化波動率」：t−5 ~ t+5 每個相對日各取其往前 ${PREWIN} 個交易日的 Parkinson 日內波動率平均、×√252 年化，跨場平均。<br>`
+      + `視圖②「單日波動率」：每個相對日的當日 Parkinson 波動率，可切日內／年化單位。兩視圖皆需 11 個相對日行情齊全的場次才計入；行情涵蓋 2015 年起。與法說會查詢網站分開維護。`;
     document.getElementById('codeList').innerHTML =
       Object.entries(d.stocks).sort((a,b)=>a[0].localeCompare(b[0]))
         .map(([c,v]) => `<option value="${c}">${c} ${v.name}</option>`).join('');
