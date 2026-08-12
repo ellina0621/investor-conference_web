@@ -140,6 +140,8 @@
   td.t0col,th.t0col{background:var(--accent-soft);color:var(--accent-light);font-weight:700;}
   tr.avg td{background:var(--surface2);font-weight:800;color:var(--text-strong);border-top:2px solid var(--accent);border-bottom:none;}
   tr.avg td:first-child{color:var(--accent-light);}
+  tr.cnt td{background:var(--surface2);font-size:11px;color:var(--muted);font-weight:600;padding:4px 11px;border-bottom:none;}
+  td .pend{color:var(--muted);font-size:11px;font-weight:600;font-style:italic;}
 
   .empty{color:var(--muted);text-align:center;padding:50px 20px;font-size:15px;line-height:1.9;}
   .foot{color:var(--muted);font-size:12px;margin-top:34px;line-height:1.8;border-top:1px solid var(--border);padding-top:16px;}
@@ -342,21 +344,46 @@ function showEmptyNote(msg){
 }
 
 // 依年份區間取子集並算各相對日平均（視圖①、②共用；每列＝[ymd, v_-5..v_+5]）
+// 剛開完的法說會，t+n 那幾個交易日還沒到 → 該格是 null：逐相對日各自平均、各自算分母，
+// 所以 ns[i] 可能小於 n（open＝這批裡有幾場還沒滿窗）。
 function averageRange(events, y0, y1){
   const sel = events.filter(r => { const y = yearOf(r[0]); return y >= y0 && y <= y1; });
-  if(!sel.length) return {n:0, avg:null, events:[]};
+  if(!sel.length) return {n:0, avg:null, ns:null, events:[], open:0};
   const sums = new Array(OFFS.length).fill(0);
-  sel.forEach(r => { for(let i=0;i<OFFS.length;i++) sums[i] += r[i+1]; });
-  return {n:sel.length, avg:sums.map(s => s / sel.length), events:sel};
+  const cnts = new Array(OFFS.length).fill(0);
+  let open = 0;
+  sel.forEach(r => {
+    let miss = 0;
+    for(let i=0;i<OFFS.length;i++){
+      const v = r[i+1];
+      if(v == null){ miss++; continue; }
+      sums[i] += v; cnts[i]++;
+    }
+    if(miss) open++;
+  });
+  return {n:sel.length, avg:sums.map((s,i) => cnts[i] ? s / cnts[i] : null),
+          ns:cnts, events:sel, open:open};
 }
 
-function drawChart(sel, ref){
+// 把平均序列乘上單位係數（年化/日內）；null（該相對日還沒到）要保持 null，不能變 0
+function scaleAvg(a, f){ return a ? a.map(v => v == null ? null : v * f) : null; }
+
+// 未滿窗說明（接在 rangeNote 後面）
+function openNote(res){
+  if(!res.open) return '';
+  const pend = res.events.filter(r => r.slice(1).some(v => v == null))
+                         .map(r => fmtDate(r[0])).join('、');
+  return `<br><span style="color:var(--muted)">其中 <b>${res.open}</b> 場尚未滿窗（${pend}）：` +
+         `t+n 的交易日還沒到，已把已經發生的相對日先計入，故各相對日的平均場數不同（見表格「場數」列），交易日到齊後自動補算。</span>`;
+}
+
+function drawChart(sel, ref, ns){
   const W = 920, H = 300, padL = 46, padR = 16, padT = 22, padB = 34;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const n = OFFS.length;
   const xs = i => padL + innerW * (i / (n - 1));
   let lo = Infinity, hi = -Infinity;
-  [sel, ref].forEach(a => { if(a) a.forEach(v => { lo = Math.min(lo, v); hi = Math.max(hi, v); }); });
+  [sel, ref].forEach(a => { if(a) a.forEach(v => { if(v == null) return; lo = Math.min(lo, v); hi = Math.max(hi, v); }); });
   if(!isFinite(lo)){ lo = 0; hi = 1; }
   const pad = (hi - lo) * 0.15 || 0.1; lo = Math.max(0, lo - pad); hi = hi + pad;
   const span = (hi - lo) || 1;
@@ -377,14 +404,18 @@ function drawChart(sel, ref){
     xl += `<text x="${xs(i).toFixed(1)}" y="${H-12}" font-size="11" text-anchor="middle" fill="${o===0?'var(--accent-light)':'var(--muted)'}" font-weight="${o===0?700:500}">${OFFS_SHORT(o)}</text>`;
   });
 
-  const pathOf = a => a.map((v,i) => `${i===0?'M':'L'}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' ');
+  // 值為 null（該相對日的交易日還沒到）的點：不畫點、不標值，線也不連過去
+  const pathOf = a => a.map((v,i) => [v,i]).filter(p => p[0] != null)
+                       .map((p,k) => `${k===0?'M':'L'}${xs(p[1]).toFixed(1)},${ys(p[0]).toFixed(1)}`).join(' ');
   let refLine = ref ? `<path d="${pathOf(ref)}" fill="none" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="5,4" opacity=".55"/>` : '';
   let mainLine = `<path d="${pathOf(sel)}" fill="none" stroke="var(--accent-light)" stroke-width="2.6"/>`;
   let dots = sel.map((v,i) => {
+    if(v == null) return '';
     const zero = OFFS[i] === 0;
-    return `<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="${zero?5.5:3.4}" fill="${zero?'var(--accent)':'var(--accent-light)'}" stroke="var(--bg)" stroke-width="1.5"><title>${OFFS_LABEL(OFFS[i])}：${v.toFixed(2)}%</title></circle>`;
+    const nn = (ns && ns[i] != null) ? `（${ns[i]} 場平均）` : '';
+    return `<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="${zero?5.5:3.4}" fill="${zero?'var(--accent)':'var(--accent-light)'}" stroke="var(--bg)" stroke-width="1.5"><title>${OFFS_LABEL(OFFS[i])}：${v.toFixed(2)}%${nn}</title></circle>`;
   }).join('');
-  let vlab = sel.map((v,i) => `<text x="${xs(i).toFixed(1)}" y="${(ys(v)-11).toFixed(1)}" font-size="10.5" text-anchor="middle" fill="${OFFS[i]===0?'var(--accent-light)':'var(--muted)'}" font-weight="${OFFS[i]===0?700:500}">${v.toFixed(2)}</text>`).join('');
+  let vlab = sel.map((v,i) => v == null ? '' : `<text x="${xs(i).toFixed(1)}" y="${(ys(v)-11).toFixed(1)}" font-size="10.5" text-anchor="middle" fill="${OFFS[i]===0?'var(--accent-light)':'var(--muted)'}" font-weight="${OFFS[i]===0?700:500}">${v.toFixed(2)}</text>`).join('');
 
   const chart = document.getElementById('chart');
   chart.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -406,21 +437,30 @@ function dataTable(res, f){
   OFFS.forEach(o => th += `<th class="${o===0?'t0col':''}">${OFFS_SHORT(o)}</th>`);
   th += '</tr>';
   let avgTr = '<tr class="avg"><td>平均（' + res.n + ' 場）</td>';
-  res.avg.forEach((v,i) => avgTr += `<td class="${OFFS[i]===0?'t0col':''}">${(v*f).toFixed(2)}</td>`);
+  res.avg.forEach((v,i) => avgTr += `<td class="${OFFS[i]===0?'t0col':''}">${v==null?'—':(v*f).toFixed(2)}</td>`);
   avgTr += '</tr>';
+  // 有場次還沒滿窗 → 各相對日的分母不同，多一列標出每個相對日實際平均了幾場
+  let cntTr = '';
+  if(res.ns && res.ns.some(c => c !== res.n)){
+    cntTr = '<tr class="cnt"><td>場數</td>' +
+      res.ns.map((c,i) => `<td class="${OFFS[i]===0?'t0col':''}">${c}</td>`).join('') + '</tr>';
+  }
   let rows = '';
   res.events.forEach(r => {
     rows += '<tr><td>' + fmtDate(r[0]) + '</td>';
-    for(let i=0;i<OFFS.length;i++) rows += `<td class="${OFFS[i]===0?'t0col':''}">${(r[i+1]*f).toFixed(2)}</td>`;
+    for(let i=0;i<OFFS.length;i++){
+      const v = r[i+1];
+      rows += `<td class="${OFFS[i]===0?'t0col':''}">${v==null?'<span class="pend">未到</span>':(v*f).toFixed(2)}</td>`;
+    }
     rows += '</tr>';
   });
-  document.getElementById('tbl').innerHTML = th + avgTr + rows;
+  document.getElementById('tbl').innerHTML = th + avgTr + cntTr + rows;
 }
 
 // ══════════ 視圖① 滾動 PREWIN 天年化波動率（t−5 ~ t+5 各相對日） ══════════
 function renderRoll(st){
   const evs = st.roll || [];
-  if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 的滾動年化資料（需事件前 ${PREWIN}+5 個交易日行情齊全）。可切換到「單日波動率」檢視。`); return; }
+  if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 的滾動年化資料（每個相對日都要「含當日往回 ${PREWIN} 個交易日」的行情齊全）。可切換到「單日波動率」檢視。`); return; }
   const y0 = +document.getElementById('yrFrom').value;
   const y1 = +document.getElementById('yrTo').value;
   const lo = Math.min(y0,y1), hi = Math.max(y0,y1);
@@ -430,13 +470,13 @@ function renderRoll(st){
   document.getElementById('hBadge').textContent = '共 ' + full.n + ' 場（' + yearOf(evs[evs.length-1][0]) + '–' + yearOf(evs[0][0]) + '）';
   const rn = document.getElementById('rangeNote'); rn.style.display = 'block';
   if(res.n === 0){ showEmptyNote(`<b>${lo}–${hi}</b> 年間查無符合窗口的法說會場次。`); return; }
-  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會，每個相對日為「近 ${PREWIN} 天（含當日）滾動年化波動率」的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}。`;
+  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會，每個相對日為「近 ${PREWIN} 天（含當日）滾動年化波動率」的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}。` + openNote(res);
 
   document.getElementById('cards').style.display = 'flex';
   document.getElementById('cards').innerHTML = keyCards(res.avg);
   document.getElementById('chartWrap').style.display = 'block';
   document.getElementById('chartCap').innerHTML = `法說會前後每個相對日「近 ${PREWIN} 天（含當日）滾動<b>年化</b>波動率」（%）跨場平均；t0 為法說當日（虛線）。因窗口 ${PREWIN} 天、t−5~t+5 僅差 10 天，曲線通常平緩，重點看斜率（事件逼近時波動率累積或消退）。`;
-  drawChart(res.avg, res.n < full.n ? full.avg : null);
+  drawChart(res.avg, res.n < full.n ? full.avg : null, res.ns);
   document.getElementById('legend').innerHTML =
     `<span class="k"><span class="sw" style="background:var(--accent-light)"></span>選定區間平均</span>` +
     `<span class="k"><span class="sw" style="background:var(--muted);opacity:.6"></span>全部年份平均（參考）</span>` +
@@ -449,7 +489,7 @@ function renderRoll(st){
 // ══════════ 視圖② 單日波動率（t−5 ~ t+5，可年化） ══════════
 function renderRel(st){
   const evs = st.ev || [];
-  if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 完整窗口的法說會場次。可切換到「滾動年化波動率」檢視。`); return; }
+  if(!evs.length){ showEmptyNote(`此檔沒有可用的 t−5 ~ t+5 單日波動率場次（法說當日與前 5 個交易日行情要齊全；t+n 還沒到的場次會照納入、缺的相對日標「未到」）。可切換到「滾動年化波動率」檢視。`); return; }
   const y0 = +document.getElementById('yrFrom').value;
   const y1 = +document.getElementById('yrTo').value;
   const lo = Math.min(y0,y1), hi = Math.max(y0,y1);
@@ -461,13 +501,13 @@ function renderRel(st){
   const rn = document.getElementById('rangeNote'); rn.style.display = 'block';
   if(res.n === 0){ showEmptyNote(`<b>${lo}–${hi}</b> 年間查無符合窗口的法說會場次。`); return; }
   const unit = ann ? '年化波動率' : '日內波動率';
-  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}；單位：<b>${unit}</b>。`;
+  rn.innerHTML = `目前顯示 <b>${lo}–${hi}</b> 年、共 <b>${res.n}</b> 場法說會的平均${res.n<full.n?`（全部年份 ${full.n} 場，見圖中灰色參考線）`:'（＝全部年份）'}；單位：<b>${unit}</b>。` + openNote(res);
 
   document.getElementById('cards').style.display = 'flex';
-  document.getElementById('cards').innerHTML = keyCards(res.avg.map(v=>v*f));
+  document.getElementById('cards').innerHTML = keyCards(scaleAvg(res.avg, f));
   document.getElementById('chartWrap').style.display = 'block';
   document.getElementById('chartCap').innerHTML = `法說會前後每個相對日的平均<b>${unit}</b>（%）；t0 為法說當日（虛線）。單日波動率反映當天的波動尖峰。`;
-  drawChart(res.avg.map(v=>v*f), res.n < full.n ? full.avg.map(v=>v*f) : null);
+  drawChart(scaleAvg(res.avg, f), res.n < full.n ? scaleAvg(full.avg, f) : null, res.ns);
   document.getElementById('legend').innerHTML =
     `<span class="k"><span class="sw" style="background:var(--accent-light)"></span>選定區間平均</span>` +
     `<span class="k"><span class="sw" style="background:var(--muted);opacity:.6"></span>全部年份平均（參考）</span>` +
