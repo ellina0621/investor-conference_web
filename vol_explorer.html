@@ -141,6 +141,9 @@
   tr.avg td{background:var(--surface2);font-weight:800;color:var(--text-strong);border-top:2px solid var(--accent);border-bottom:none;}
   tr.avg td:first-child{color:var(--accent-light);}
   tr.cnt td{background:var(--surface2);font-size:11px;color:var(--muted);font-weight:600;padding:4px 11px;border-bottom:none;}
+  label.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text);font-weight:600;cursor:pointer;user-select:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 11px;}
+  label.chk:hover{border-color:var(--accent);}
+  label.chk input{accent-color:var(--accent);cursor:pointer;margin:0;}
   td .pend{color:var(--muted);font-size:11px;font-weight:600;font-style:italic;}
 
   .empty{color:var(--muted);text-align:center;padding:50px 20px;font-size:15px;line-height:1.9;}
@@ -224,6 +227,12 @@
           <button class="seg on" data-ann="0">日內波動率</button>
           <button class="seg" data-ann="1">年化 ×√252</button>
         </div>
+      </div>
+      <div class="ctl" id="openToggleWrap" style="display:none">
+        <label>未滿窗場次</label>
+        <label class="chk" title="剛開完的法說會，t+n 的交易日還沒到。勾選＝把已經發生的相對日先計入；取消＝只算窗口已滿的場次">
+          <input type="checkbox" id="openChk" checked> 含未滿窗場次
+        </label>
       </div>
     </div>
 
