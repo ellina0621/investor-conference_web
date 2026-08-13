@@ -273,8 +273,18 @@ let DATA = null, OFFS = [], I0 = 0, PREWIN = 30;
 let curCode = null;
 let mode = (qs.get('view') === 'rel') ? 'rel' : 'roll';   // 'roll'=視圖①滾動年化  'rel'=視圖②單日
 let ann = false;                                          // 視圖②：是否年化顯示
+// 是否把「未滿窗」場次（t+n 交易日還沒到）算進來。預設含；記在 localStorage，
+// 與個股頁 index.html 的同名開關共用 key，兩邊設定一致。網址 ?open=0/1 可覆蓋。
+let INC_OPEN = true;
+try { INC_OPEN = localStorage.getItem('volIncludeOpen') !== '0'; } catch(e) {}
+if(qs.get('open') === '0') INC_OPEN = false;
+if(qs.get('open') === '1') INC_OPEN = true;
 
 function yearOf(ymd){ return Math.floor(ymd / 10000); }
+// 未滿窗＝該場有任何相對日是 null
+function isOpenRow(r){ for(let i=1;i<r.length;i++) if(r[i] == null) return true; return false; }
+function filterOpen(rows){ return INC_OPEN ? rows : rows.filter(r => !isOpenRow(r)); }
+function hasOpen(st){ return ((st.ev||[]).some(isOpenRow)) || ((st.roll||[]).some(isOpenRow)); }
 function fmtDate(ymd){ const s = String(ymd); return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -468,7 +478,9 @@ function dataTable(res, f){
 
 // ══════════ 視圖① 滾動 PREWIN 天年化波動率（t−5 ~ t+5 各相對日） ══════════
 function renderRoll(st){
-  const evs = st.roll || [];
+  const evs = filterOpen(st.roll || []);
+  if(!evs.length && !INC_OPEN && (st.roll||[]).length){
+    showEmptyNote(`此檔的法說會場次目前都還沒滿窗（t+n 的交易日還沒到）。勾選「含未滿窗場次」即可看已發生部分的統計。`); return; }
   if(!evs.length){ showEmptyNote(`此檔沒有 t−5 ~ t+5 的滾動年化資料（每個相對日都要「含當日往回 ${PREWIN} 個交易日」的行情齊全）。可切換到「單日波動率」檢視。`); return; }
   const y0 = +document.getElementById('yrFrom').value;
   const y1 = +document.getElementById('yrTo').value;
@@ -497,7 +509,9 @@ function renderRoll(st){
 
 // ══════════ 視圖② 單日波動率（t−5 ~ t+5，可年化） ══════════
 function renderRel(st){
-  const evs = st.ev || [];
+  const evs = filterOpen(st.ev || []);
+  if(!evs.length && !INC_OPEN && (st.ev||[]).length){
+    showEmptyNote(`此檔的法說會場次目前都還沒滿窗（t+n 的交易日還沒到）。勾選「含未滿窗場次」即可看已發生部分的統計。`); return; }
   if(!evs.length){ showEmptyNote(`此檔沒有可用的 t−5 ~ t+5 單日波動率場次（法說當日與前 5 個交易日行情要齊全；t+n 還沒到的場次會照納入、缺的相對日標「未到」）。可切換到「滾動年化波動率」檢視。`); return; }
   const y0 = +document.getElementById('yrFrom').value;
   const y1 = +document.getElementById('yrTo').value;
@@ -543,6 +557,9 @@ function render(){
   document.getElementById('hCode').textContent = curCode;
   document.getElementById('hName').textContent = st.name || '';
   document.getElementById('empty').style.display = 'none';
+  // 只有真的有未滿窗場次的股票才顯示開關（其他股票勾不勾都一樣）
+  document.getElementById('openToggleWrap').style.display = hasOpen(st) ? 'flex' : 'none';
+  document.getElementById('openChk').checked = INC_OPEN;
   updateModeUI();
   if(mode === 'roll') renderRoll(st); else renderRel(st);
 }
@@ -604,6 +621,14 @@ document.getElementById('annToggle').addEventListener('click', e => {
   const b = e.target.closest('.seg'); if(!b) return;
   ann = (+b.dataset.ann === 1);
   if(curCode) render(); else updateModeUI();
+});
+
+// 含／不含未滿窗場次（設定存 localStorage，個股頁面板共用同一個 key）
+document.getElementById('openChk').addEventListener('change', e => {
+  INC_OPEN = !!e.target.checked;
+  try { localStorage.setItem('volIncludeOpen', INC_OPEN ? '1' : '0'); } catch(err) {}
+  const url = new URL(location); url.searchParams.set('open', INC_OPEN ? '1' : '0'); history.replaceState(null,'',url);
+  if(curCode) render();
 });
 
 document.getElementById('quick').addEventListener('click', e => {
